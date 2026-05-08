@@ -172,4 +172,11 @@ finally {
             Write-Host "Run 'git stash list' and 'git stash pop' after resolving the error." -ForegroundColor Yellow
         }
     }
+
+    if ($completed) {
+        Write-Step "Validating remotes are correctly configured"
+        Ensure-Remote -Name "origin" -Url $ForkUrl -PushUrl $ForkUrl
+        Ensure-Remote -Name "upstream" -Url $UpstreamUrl -PushUrl "no_push"
+        Write-Host "Remotes verified and locked." -ForegroundColor Green
+    }
 }
