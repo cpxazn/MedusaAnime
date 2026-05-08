@@ -44,7 +44,7 @@ class MyAnimeListClient(AnimeSource):
     def __init__(self):
         """Initialize the MyAnimeList client."""
         self.session = MedusaSession()
-        self.session.update_headers({
+        self.session.headers.update({
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'User-Agent': 'Medusa Anime Lookup (contact: medusa-project)',
@@ -477,12 +477,28 @@ class MyAnimeListClient(AnimeSource):
             links_section = soup.find('table', class_='statistics-table')
             if links_section:
                 for link in links_section.find_all('a'):
-                    href = link.get('href', '')
+                    href = link.get('href', '').replace('&amp;', '&')
                     if 'anidb.net' in href:
                         anidb_match = re.search(r'aid=(\d+)', href)
                         if anidb_match:
                             anime.anidb_id = int(anidb_match.group(1))
                     if 'anilist.co' in href:
+                        anilist_match = re.search(r'/anime/(\d+)', href)
+                        if anilist_match:
+                            anime.anilist_id = int(anilist_match.group(1))
+
+            if not anime.anidb_id or not anime.anilist_id:
+                for link in soup.find_all('a', href=True):
+                    href = (link.get('href') or '').replace('&amp;', '&')
+                    if not href:
+                        continue
+
+                    if 'anidb.net' in href and not anime.anidb_id:
+                        anidb_match = re.search(r'aid=(\d+)', href)
+                        if anidb_match:
+                            anime.anidb_id = int(anidb_match.group(1))
+
+                    if 'anilist.co' in href and not anime.anilist_id:
                         anilist_match = re.search(r'/anime/(\d+)', href)
                         if anilist_match:
                             anime.anilist_id = int(anilist_match.group(1))

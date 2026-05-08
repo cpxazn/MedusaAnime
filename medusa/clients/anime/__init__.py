@@ -37,10 +37,16 @@ class AnimeSeries:
     season: Optional[str] = None  # SPRING, SUMMER, FALL, WINTER
     year: Optional[int] = None
     episodes: Optional[int] = None
+    episode_duration_minutes: Optional[int] = None
+    episode_info: Optional[str] = None  # Raw display text, e.g. "12 eps × 24m"
     score: Optional[float] = None
     rating: Optional[float] = None
     genres: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+    studios: List[str] = field(default_factory=list)
+    next_episode_number: Optional[int] = None
+    next_episode_release: Optional[str] = None  # Localized date text from source
+    next_episode_countdown: Optional[str] = None  # e.g. "0d 06h 01m 03s"
     
     # Images
     image_url: Optional[str] = None

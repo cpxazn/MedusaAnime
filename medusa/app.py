@@ -500,6 +500,7 @@ class MedusaApp(object):
         self.ANIME_SPLIT_HOME = False
         self.ANIME_SPLIT_HOME_IN_TABS = False
         self.AUTO_ANIME_TO_LIST = False
+        self.PREFERRED_ANIME_RELEASE_GROUPS = []
 
         self.USE_SYNOINDEX = False
 
