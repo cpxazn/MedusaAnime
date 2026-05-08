@@ -14,7 +14,6 @@ jobs:
     env:
       UPSTREAM_REPO: https://github.com/pymedusa/Medusa.git
       UPSTREAM_BRANCH: master
-      FORK_BRANCH: master
       FEATURE_BRANCH: feature/livechart-integration
 
     steps:
@@ -44,31 +43,28 @@ jobs:
           set -euo pipefail
 
           upstream_sha="$(git rev-parse "upstream/${UPSTREAM_BRANCH}")"
-          origin_sha="$(git rev-parse "origin/${FORK_BRANCH}")"
+          feature_sha="$(git rev-parse "origin/${FEATURE_BRANCH}")"
+          merge_base="$(git merge-base "origin/${FEATURE_BRANCH}" "upstream/${UPSTREAM_BRANCH}")"
+          upstream_ahead_count="$(git rev-list --count "${merge_base}..upstream/${UPSTREAM_BRANCH}")"
 
           echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
-          echo "origin_sha=${origin_sha}" >> "$GITHUB_OUTPUT"
+          echo "feature_sha=${feature_sha}" >> "$GITHUB_OUTPUT"
+          echo "merge_base=${merge_base}" >> "$GITHUB_OUTPUT"
+          echo "upstream_ahead_count=${upstream_ahead_count}" >> "$GITHUB_OUTPUT"
 
-          if [ "${upstream_sha}" = "${origin_sha}" ]; then
+          if [ "${upstream_ahead_count}" = "0" ]; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
             echo "No upstream changes detected."
           else
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "Upstream changed: ${origin_sha} -> ${upstream_sha}"
+            echo "Upstream has ${upstream_ahead_count} new commit(s) since ${merge_base}."
           fi
 
       - name: Skip when no upstream changes
         if: steps.detect.outputs.has_changes != 'true'
         run: echo "Nothing to sync today."
 
-      - name: Sync fork master from upstream
-        if: steps.detect.outputs.has_changes == 'true'
-        run: |
-          git checkout -B "${FORK_BRANCH}" "origin/${FORK_BRANCH}"
-          git reset --hard "upstream/${UPSTREAM_BRANCH}"
-          git push origin "${FORK_BRANCH}" --force-with-lease
-
-      - name: Rebase feature branch onto updated master
+      - name: Rebase feature branch onto upstream master
         if: steps.detect.outputs.has_changes == 'true'
         run: |
           git checkout -B "${FEATURE_BRANCH}" "origin/${FEATURE_BRANCH}"
@@ -104,11 +100,13 @@ jobs:
           short_sha="${short_sha:0:7}"
           date_tag="$(date -u +%Y%m%d)"
           tag="sync-${date_tag}-${short_sha}-${GITHUB_RUN_NUMBER}"
+          feature_head="$(git rev-parse HEAD)"
 
-          git tag "${tag}" "${{ steps.detect.outputs.upstream_sha }}"
+          git tag "${tag}" "${feature_head}"
           git push origin "${tag}"
 
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "feature_head=${feature_head}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         if: steps.detect.outputs.has_changes == 'true'
@@ -116,14 +114,17 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Sync ${{ steps.tag.outputs.tag }}
-          target_commitish: ${{ steps.detect.outputs.upstream_sha }}
+          target_commitish: ${{ steps.tag.outputs.feature_head }}
           generate_release_notes: true
           body: |
-            Automated upstream sync.
+            Automated upstream rebase.
 
             - Upstream repo: ${{ env.UPSTREAM_REPO }}
             - Upstream branch: ${{ env.UPSTREAM_BRANCH }}
-            - Previous fork master: ${{ steps.detect.outputs.origin_sha }}
+            - Feature branch before rebase: ${{ steps.detect.outputs.feature_sha }}
+            - Merge base before rebase: ${{ steps.detect.outputs.merge_base }}
             - New upstream master: ${{ steps.detect.outputs.upstream_sha }}
+            - Rebases applied from upstream: ${{ steps.detect.outputs.upstream_ahead_count }}
+            - Rebases result commit: ${{ steps.tag.outputs.feature_head }}
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
