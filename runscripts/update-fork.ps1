@@ -20,21 +20,30 @@ function Write-Step {
 function Ensure-Remote {
     param(
         [string]$Name,
-        [string]$Url
+        [string]$Url,
+        [string]$PushUrl = ""
     )
 
     $remoteNames = @(git remote)
     if ($remoteNames -notcontains $Name) {
         Write-Step "Adding remote '$Name' -> $Url"
         git remote add $Name $Url
-        return
+    }
+    else {
+        $existing = (git remote get-url $Name).Trim()
+
+        if ($existing -ne $Url) {
+            Write-Step "Updating remote '$Name' from '$existing' to '$Url'"
+            git remote set-url $Name $Url
+        }
     }
 
-    $existing = (git remote get-url $Name).Trim()
-
-    if ($existing -ne $Url) {
-        Write-Step "Updating remote '$Name' from '$existing' to '$Url'"
-        git remote set-url $Name $Url
+    if ($PushUrl -ne "") {
+        $existingPush = (git remote get-url --push $Name).Trim()
+        if ($existingPush -ne $PushUrl) {
+            Write-Step "Updating push URL for '$Name' from '$existingPush' to '$PushUrl'"
+            git remote set-url --push $Name $PushUrl
+        }
     }
 }
 
@@ -82,8 +91,8 @@ try {
     }
 
     Write-Step "Ensuring remotes are configured"
-    Ensure-Remote -Name "origin" -Url $ForkUrl
-    Ensure-Remote -Name "upstream" -Url $UpstreamUrl
+    Ensure-Remote -Name "origin" -Url $ForkUrl -PushUrl $ForkUrl
+    Ensure-Remote -Name "upstream" -Url $UpstreamUrl -PushUrl "no_push"
 
     Write-Step "Fetching origin and upstream"
     git fetch --prune origin
