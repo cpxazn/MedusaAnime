@@ -176,7 +176,7 @@ finally {
     if ($completed) {
         Write-Step "Validating remotes are correctly configured"
         Ensure-Remote -Name "origin" -Url $ForkUrl -PushUrl $ForkUrl
-        Ensure-Remote -Name "upstream" -Url $UpstreamUrl -PushUrl "no_push"
-        Write-Host "Remotes verified and locked." -ForegroundColor Green
+        Ensure-Remote -Name "upstream" -Url $ForkUrl -PushUrl $ForkUrl
+        Write-Host "Remotes verified and locked back to your fork." -ForegroundColor Green
     }
 }
