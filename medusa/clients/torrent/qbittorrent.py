@@ -106,14 +106,14 @@ class QBittorrentAPI(GenericClient):
                         {'name': self.name})
             return None
 
-        if self.response.status_code == 200:
+        if self.response.status_code in (200, 204):
             if self.response.text == 'Fails.':
                 log.warning('{name}: Invalid Username or Password, check your config',
                             {'name': self.name})
                 return None
 
             # Successful log in
-            self.auth = self.response.text
+            self.auth = self.response.text or True
 
             return self.auth
 
@@ -411,8 +411,8 @@ class QBittorrentAPI(GenericClient):
         if torrent['state'] in ('pausedDL', 'stalledDL'):
             client_status.set_status_string('Paused')
 
-        if torrent['state'] in ('stoppdDL'):
-            client_status.set_status_string('Stopped')
+        if torrent['state'] == 'stoppedDL':
+            client_status.set_status_string('Paused')
 
         if torrent['state'] == 'error':
             client_status.set_status_string('Failed')

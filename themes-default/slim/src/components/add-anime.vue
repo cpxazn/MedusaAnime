@@ -2,8 +2,8 @@
     <div id="add-anime">
         <vue-snotify />
 
-        <div class="row">
-            <div class="col-md-12 controls-row">
+        <div class="row controls-row">
+            <div class="col-md-6 col-sm-12 controls-column">
                 <config-template label-for="anime-source" label="Source">
                     <select id="anime-source" v-model="selectedSource" class="form-control max-input350" @change="loadAnime">
                         <option v-for="option in sourceOptions" :key="option.value" :value="option.value">
@@ -39,8 +39,11 @@
                 <div class="anime-controls-inline">
                     <button class="btn-medusa btn-inline" @click="goToPreviousSeason">Previous Season</button>
                     <button class="btn-medusa btn-inline" @click="goToNextSeason">Next Season</button>
+                    <button class="btn-medusa btn-inline" @click="loadAnime">Refresh</button>
                 </div>
+            </div>
 
+            <div class="col-md-6 col-sm-12 controls-column controls-column-search">
                 <config-template label-for="anime-query" label="Search (Optional)">
                     <input
                         id="anime-query"
@@ -48,13 +51,22 @@
                         type="text"
                         class="form-control max-input350"
                         placeholder="Search title..."
-                        @keyup.enter="loadAnime"
+                        @keyup.enter="executeSearch"
                     >
                 </config-template>
 
+                <config-template label-for="anime-search-scope" label="Search Scope">
+                    <select id="anime-search-scope" v-model="searchScope" class="form-control max-input350">
+                        <option value="season">Within Selected Season</option>
+                        <option value="global">Global Source Search</option>
+                    </select>
+                </config-template>
+
                 <div class="anime-controls-inline">
-                    <button class="btn-medusa btn-inline" @click="loadAnime">Refresh</button>
+                    <button class="btn-medusa btn-inline" @click="executeSearch">Search</button>
+                    <button class="btn-medusa btn-inline" @click="clearSearch">Clear</button>
                 </div>
+
             </div>
         </div>
 
@@ -88,7 +100,7 @@
                             </h3>
 
                             <div class="anime-card-meta">
-                                <span>{{ anime.season || selectedSeason }} {{ anime.year || selectedYear }}</span>
+                                <span>{{ formatSeasonYear(anime) }}</span>
                                 <span>{{ anime.animeType || 'Unknown Type' }}</span>
                             </div>
 
@@ -158,6 +170,7 @@ export default {
             selectedSeason: current.season,
             selectedType: 'TV',
             searchQuery: '',
+            searchScope: 'global',
             animeList: [],
             loading: false,
             sourceOptions: [
@@ -182,12 +195,16 @@ export default {
             statuses: state => state.config.consts.statuses
         }),
         filteredAnime() {
+            const baseList = this.searchScope === 'season' && this.searchQuery
+                ? this.animeList.filter(anime => this.matchesSearchQuery(anime, this.searchQuery))
+                : this.animeList;
+
             if (this.selectedType === 'ALL') {
-                return this.animeList;
+                return baseList;
             }
 
             const target = this.selectedType.toUpperCase();
-            return this.animeList.filter(anime => {
+            return baseList.filter(anime => {
                 const animeType = (anime.animeType || '').toUpperCase();
                 return animeType.indexOf(target) !== -1;
             });
@@ -201,6 +218,13 @@ export default {
         this.loadAnime();
     },
     methods: {
+        executeSearch() {
+            this.loadAnime();
+        },
+        clearSearch() {
+            this.searchQuery = '';
+            this.loadAnime();
+        },
         currentSeasonAndYear() {
             const now = new Date();
             const month = now.getMonth() + 1;
@@ -228,7 +252,7 @@ export default {
                 };
 
                 let response;
-                if (this.searchQuery) {
+                if (this.searchQuery && this.searchScope === 'global') {
                     params.q = this.searchQuery;
                     response = await this.client.api.get('anime/search', { params });
                 } else {
@@ -291,6 +315,41 @@ export default {
             }
 
             return parts.join(' • ') || 'N/A';
+        },
+        formatSeasonYear(anime) {
+            if (anime.season || anime.year) {
+                const season = anime.season || 'Unknown Season';
+                const year = anime.year || 'Unknown Year';
+                return `${season} ${year}`.trim();
+            }
+
+            return 'Season info unavailable';
+        },
+        normalizeSearchText(value) {
+            return String(value || '')
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        },
+        matchesSearchQuery(anime, query) {
+            const needle = this.normalizeSearchText(query);
+            if (!needle) {
+                return true;
+            }
+
+            const fields = [
+                anime.titleRomanji,
+                anime.titleEnglish,
+                anime.titleJapanese,
+                anime.displayTitle
+            ];
+
+            return fields.some(field => {
+                const haystack = this.normalizeSearchText(field);
+                return haystack && haystack.indexOf(needle) !== -1;
+            });
         },
         getPrimaryTitle(anime) {
             return anime.titleRomanji || anime.titleEnglish || anime.titleJapanese || anime.displayTitle;
@@ -491,6 +550,14 @@ export default {
 <style scoped>
 .controls-row {
     margin-bottom: 20px;
+}
+
+.controls-column {
+    margin-bottom: 12px;
+}
+
+.controls-column-search {
+    padding-top: 2px;
 }
 
 .anime-controls-inline {
