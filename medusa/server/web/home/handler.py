@@ -4,6 +4,7 @@ from __future__ import unicode_literals
 
 import json
 import os
+import re
 import time
 from json.decoder import JSONDecodeError
 
@@ -27,7 +28,7 @@ from medusa.helper.exceptions import (
     CantUpdateShowException,
     ex,
 )
-from medusa.helpers.anidb import get_release_groups_for_anime
+from medusa.helpers.anidb import get_release_groups_for_anime, get_release_groups_for_anime_aid
 from medusa.indexers.utils import indexer_name_to_id
 from medusa.scene_exceptions import (
     get_all_scene_exceptions
@@ -1008,19 +1009,157 @@ class Home(WebRoot):
 
     # Move to apiv2 (anidb-release-group-ui.vue)
     @staticmethod
-    def fetch_releasegroups(series_name):
+    def fetch_releasegroups(series_name, romanji_name=None, anidb_id=None):
         """Api route for retrieving anidb release groups for an anime show."""
-        logger.log(u'ReleaseGroups: {show}'.format(show=series_name), logger.INFO)
+        logger.log(u'ReleaseGroups: {show} romanji={romanji} aid={aid}'.format(
+            show=series_name,
+            romanji=romanji_name,
+            aid=anidb_id
+        ), logger.INFO)
+
+        # AniDB name matching is strict; retry variants and prioritize romanji when provided.
+        candidates = []
+
+        def add_candidate(value):
+            cleaned = (value or '').strip()
+            if not cleaned:
+                return
+
+            lower_cleaned = cleaned.lower()
+            for existing in candidates:
+                if existing.lower() == lower_cleaned:
+                    return
+
+            candidates.append(cleaned)
+
+        # Regex that strips trailing season/part/arc suffixes to get the base series name.
+        # Examples: "4th Season: Second Year, First Semester", "Season 2", "Part II", "2nd Season", etc.
+        _season_suffix_re = re.compile(
+            r'[\s:]+(?:\d+(?:st|nd|rd|th)?\s+Season.*|Season\s+\d+.*|Part\s+\w+.*'
+            r'|\d+-nensei.*|Cour\s+\d+.*|[\u0391-\u03C9]+\s+Season.*)$',
+            re.IGNORECASE
+        )
+
+        def strip_season_suffix(value):
+            if not value:
+                return value
+            stripped = _season_suffix_re.sub('', value).strip().rstrip(':').strip()
+            return stripped if stripped and stripped.lower() != value.lower() else None
+
+        # Priority order (highest first):
+        # 1. Full romanji (season-specific title)
+        # 2. Full series name (season-specific title)
+        # 3. Base romanji without season suffix
+        # 4. Base series name without season suffix
+        romanji_no_year = re.sub(r'\s*\(\d{4}\)\s*$', '', romanji_name or '').strip()
+        series_no_year = re.sub(r'\s*\(\d{4}\)\s*$', '', series_name or '').strip()
+
+        add_candidate(romanji_no_year or romanji_name)
+        add_candidate(series_no_year or series_name)
+        add_candidate(strip_season_suffix(romanji_no_year or romanji_name))
+        add_candidate(strip_season_suffix(series_no_year or series_name))
+        # Original values as final fallback
+        add_candidate(romanji_name)
+        add_candidate(series_name)
+
+        def resolve_aid_from_mal(search_candidates):
+            """Best-effort AniDB ID fallback via MAL details lookup."""
+            try:
+                from medusa.clients.myanimelist import MyAnimeListClient
+
+                client = MyAnimeListClient()
+
+                def normalize_title(value):
+                    return (value or '').strip().lower()
+
+                for candidate in search_candidates:
+                    if not candidate:
+                        continue
+
+                    try:
+                        mal_results = client.search(candidate)
+                    except Exception as error:
+                        logger.log(u'ReleaseGroups MAL search failed for {candidate}: {error!r}'.format(
+                            candidate=candidate,
+                            error=error,
+                        ), logger.DEBUG)
+                        continue
+
+                    if not mal_results:
+                        continue
+
+                    target = normalize_title(candidate)
+                    prioritized = sorted(
+                        mal_results,
+                        key=lambda anime: 0 if normalize_title(getattr(anime, 'title_english', None)) == target else 1,
+                    )
+
+                    for anime in prioritized[:3]:
+                        aid = getattr(anime, 'anidb_id', None)
+                        if aid:
+                            return int(aid)
+
+                        try:
+                            details = client.get_details(anime.anime_id)
+                        except Exception:
+                            continue
+
+                        aid = getattr(details, 'anidb_id', None)
+                        if aid:
+                            return int(aid)
+            except Exception as error:
+                logger.log(u'ReleaseGroups MAL fallback failed: {error!r}'.format(error=error), logger.DEBUG)
+
+            return None
+
         try:
-            groups = get_release_groups_for_anime(series_name)
-            logger.log(u'ReleaseGroups: {groups}'.format(groups=groups), logger.INFO)
-        except AnidbAdbaConnectionException as error:
-            logger.log(u'Unable to get ReleaseGroups: {error}'.format(error=error), logger.DEBUG)
-        else:
+            aid = None
+            if anidb_id not in (None, ''):
+                try:
+                    aid = int(anidb_id)
+                except (TypeError, ValueError):
+                    aid = None
+
+            if aid:
+                groups = get_release_groups_for_anime_aid(aid)
+                logger.log(u'ReleaseGroups candidate=aid:{aid}: {groups}'.format(aid=aid, groups=groups), logger.INFO)
+                if groups:
+                    return json.dumps({
+                        'result': 'success',
+                        'groups': groups,
+                    })
+
+            # If the UI did not provide aid, resolve it server-side as a safety net.
+            # Try all candidates so base-series names (after season-suffix stripping) are also checked.
+            if not aid:
+                aid = resolve_aid_from_mal(candidates)
+                if aid:
+                    logger.log(u'ReleaseGroups resolved aid via MAL: {aid}'.format(aid=aid), logger.INFO)
+                    groups = get_release_groups_for_anime_aid(aid)
+                    logger.log(u'ReleaseGroups candidate=aid:{aid}: {groups}'.format(aid=aid, groups=groups), logger.INFO)
+                    if groups:
+                        return json.dumps({
+                            'result': 'success',
+                            'groups': groups,
+                        })
+
+            for candidate in candidates:
+                groups = get_release_groups_for_anime(candidate)
+                logger.log(u'ReleaseGroups candidate={show}: {groups}'.format(show=candidate, groups=groups), logger.INFO)
+
+                if groups:
+                    return json.dumps({
+                        'result': 'success',
+                        'groups': groups,
+                    })
+
+            # Keep API contract successful with empty list if AniDB lookup worked but found nothing.
             return json.dumps({
                 'result': 'success',
-                'groups': groups,
+                'groups': [],
             })
+        except AnidbAdbaConnectionException as error:
+            logger.log(u'Unable to get ReleaseGroups: {error}'.format(error=error), logger.DEBUG)
 
         return json.dumps({
             'result': 'failure',

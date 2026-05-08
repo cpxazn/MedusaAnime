@@ -32,6 +32,10 @@ server.key
 *.py[cod]
 
 venv
+.venv
+.venv/
+.python-version
+.kilo/
 
 #  IDE specific      #
 ######################

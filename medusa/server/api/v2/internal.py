@@ -28,7 +28,7 @@ from medusa.subtitles import subtitle_code_filter, wanted_languages
 from medusa.tv.episode import Episode, EpisodeNumber, RelativeNumber
 from medusa.tv.series import Series, SeriesIdentifier
 
-from six import ensure_text, iteritems, itervalues
+from six import ensure_text, iteritems, itervalues, text_type
 
 from tornado.escape import json_decode
 
@@ -38,6 +38,13 @@ log.logger.addHandler(logging.NullHandler())
 
 class InternalHandler(BaseRequestHandler):
     """Internal data request handler."""
+
+    @staticmethod
+    def _safe_error_text(error):
+        """Return a text representation for exceptions and message values."""
+        if isinstance(error, bytes):
+            return ensure_text(error)
+        return text_type(error)
 
     #: resource name
     name = 'internal'
@@ -225,6 +232,7 @@ class InternalHandler(BaseRequestHandler):
                 search_terms.append(matches.group(1))
 
         results = {}
+        failed_indexers = {}
         final_results = []
 
         # Query indexers for each search term and build the list of results
@@ -236,9 +244,32 @@ class InternalHandler(BaseRequestHandler):
 
             try:
                 indexer_api = indexer_instance.indexer(**custom_api_params)
+            except IndexerException as msg:
+                log.info('Could not initialize indexer {indexer}: {error}',
+                         {'indexer': indexer_instance.name, 'error': msg})
+                failed_indexers[indexer] = {
+                    'indexerId': indexer,
+                    'indexerName': indexer_instance.name,
+                    'error': self._safe_error_text(msg)
+                }
+                continue
             except IndexerUnavailable as msg:
                 log.info('Could not initialize indexer {indexer}: {error}',
                          {'indexer': indexer_instance.name, 'error': msg})
+                failed_indexers[indexer] = {
+                    'indexerId': indexer,
+                    'indexerName': indexer_instance.name,
+                    'error': self._safe_error_text(msg)
+                }
+                continue
+            except Exception as error:
+                log.info('Unexpected error while initializing indexer {indexer}: {error!r}',
+                         {'indexer': indexer_instance.name, 'error': error})
+                failed_indexers[indexer] = {
+                    'indexerId': indexer,
+                    'indexerName': indexer_instance.name,
+                    'error': self._safe_error_text(error)
+                }
                 continue
 
             log.debug('Searching for show with search term(s): {terms} on indexer: {indexer}',
@@ -251,9 +282,19 @@ class InternalHandler(BaseRequestHandler):
                 except IndexerException as error:
                     log.info('Error searching for show. term(s): {terms} indexer: {indexer} error: {error}',
                              {'terms': search_terms, 'indexer': indexer_api.name, 'error': error})
+                    failed_indexers[indexer] = {
+                        'indexerId': indexer,
+                        'indexerName': indexer_api.name,
+                        'error': self._safe_error_text(error)
+                    }
                 except Exception as error:
                     log.error('Internal Error searching for show. term(s): {terms} indexer: {indexer} error: {error}',
                               {'terms': search_terms, 'indexer': indexer_api.name, 'error': error})
+                    failed_indexers[indexer] = {
+                        'indexerId': indexer,
+                        'indexerName': indexer_api.name,
+                        'error': self._safe_error_text(error)
+                    }
 
         # Get all possible show ids
         all_show_ids = {}
@@ -288,7 +329,8 @@ class InternalHandler(BaseRequestHandler):
         language_id = indexerApi().config['langabbv_to_id'][language]
         data = {
             'results': final_results,
-            'languageId': language_id
+            'languageId': language_id,
+            'failedIndexers': list(failed_indexers.values())
         }
         return self._ok(data=data)
 

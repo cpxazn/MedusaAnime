@@ -48,7 +48,14 @@
                             </tab-content>
                             <tab-content title="Customize options">
                                 <div class="stepDiv">
-                                    <add-show-options v-bind="{showName, enableAnimeOptions, presetShowOptions}" @change="updateOptions" @refresh="refreshOptionStep" />
+                                    <add-show-options
+                                        v-bind="{showName, enableAnimeOptions, presetShowOptions}"
+                                        :release-group-show-name="releaseGroupShowName"
+                                        :release-group-alt-show-name="releaseGroupAltShowName"
+                                        :release-group-anidb-id="releaseGroupAnidbId"
+                                        @change="updateOptions"
+                                        @refresh="refreshOptionStep"
+                                    />
                                 </div>
                             </tab-content>
                         </form-wizard>
@@ -226,6 +233,37 @@ export default {
             // Not selected / not searched
             return '';
         },
+        releaseGroupShowName() {
+            const { providedInfo, presetShowOptions, showName } = this;
+
+            // In Add Anime prefill flow, prefer the original anime title for AniDB group lookup
+            // instead of the indexer-normalized title that may include year/franchise names.
+            if (presetShowOptions.use && presetShowOptions.anime && providedInfo.showName) {
+                return providedInfo.showName;
+            }
+
+            return showName;
+        },
+        releaseGroupAltShowName() {
+            const { providedInfo, presetShowOptions } = this;
+
+            if (presetShowOptions.use && presetShowOptions.anime && providedInfo.releaseGroupRomanji) {
+                return providedInfo.releaseGroupRomanji;
+            }
+
+            return '';
+        },
+        releaseGroupAnidbId() {
+            const { providedInfo, presetShowOptions } = this;
+
+            if (!(presetShowOptions.use && presetShowOptions.anime)) {
+                return null;
+            }
+
+            const raw = providedInfo.releaseGroupAnidbId;
+            const parsed = Number.parseInt(raw, 10);
+            return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+        },
         showPath() {
             const {
                 selectedRootDir,
@@ -344,10 +382,14 @@ export default {
                     this.$emit('added', { ...response.data, providedInfo });
                 }
             } catch (error) {
+                const showKey = Object.keys(showId)[0] || 'unknown-indexer';
+                const showValue = showId[showKey] || 'unknown-id';
+                const backendError = error?.response?.data?.error || error?.message || 'Unknown error';
+                const message = `Error trying to add show ${showKey}${showValue}: ${backendError}`;
                 this.$snotify.error(
-                    `Error trying to add show ${Object.keys(showId)[0]}${showId[Object.keys(showId)[0]]}`
+                    message
                 );
-                this.$emit('error', { message: `Error trying to add show ${Object.keys(showId)[0]}${showId[Object.keys(showId)[0]]}` });
+                this.$emit('error', { message });
                 // }
             }
         },

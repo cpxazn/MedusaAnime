@@ -86,7 +86,9 @@
                     <div class="col-sm-10 content">
                         <anidb-release-group-ui
                             class="max-width"
-                            :show-name="showName"
+                            :show-name="releaseGroupShowName || showName"
+                            :alt-show-name="releaseGroupAltShowName"
+                            :anidb-id="releaseGroupAnidbId"
                             @change="onChangeReleaseGroupsAnime"
                         />
                     </div>
@@ -151,6 +153,21 @@ export default {
         showName: {
             type: String,
             default: '',
+            required: false
+        },
+        releaseGroupShowName: {
+            type: String,
+            default: '',
+            required: false
+        },
+        releaseGroupAltShowName: {
+            type: String,
+            default: '',
+            required: false
+        },
+        releaseGroupAnidbId: {
+            type: Number,
+            default: null,
             required: false
         },
         enableAnimeOptions: {

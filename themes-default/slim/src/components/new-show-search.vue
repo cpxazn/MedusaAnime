@@ -89,6 +89,9 @@
                         on {{ currentSearch.indexerName }}
                         in {{ currentSearch.languageName }}...
                     </div>
+                    <div v-if="searchStatus" class="search-status error">
+                        {{ searchStatus }}
+                    </div>
                     <div v-if="displayStatus === 'results'" class="search-results">
                         <legend class="legendStep">Search Results:</legend>
                         <table v-if="filteredSearchResults.length !== 0" class="search-results">
@@ -210,13 +213,16 @@ export default {
         }, 500);
 
         const { general } = this;
-        // Set the indexer to the indexer default.
-        if (general.indexerDefault) {
+        // Prefer prefilled indexer from caller, otherwise use default.
+        const providedIndexerId = Number.parseInt(this.providedInfo.indexerId, 10);
+        if (Number.isInteger(providedIndexerId) && providedIndexerId >= 0) {
+            this.indexerId = providedIndexerId;
+        } else if (general.indexerDefault) {
             this.indexerId = general.indexerDefault;
         }
 
-        // Set default indexer language.
-        this.indexerLanguage = general.indexerDefaultLanguage;
+        // Prefer prefilled language from caller, otherwise use default.
+        this.indexerLanguage = this.providedInfo.indexerLanguage || general.indexerDefaultLanguage;
 
         // Set the default show name, if provided through show dir or show name.
         this.nameToSearch = this.defaultShowName;
@@ -376,6 +382,21 @@ export default {
                 return;
             }
 
+            const failedIndexers = Array.isArray(data.failedIndexers) ? data.failedIndexers : [];
+            const tvdbFailure = failedIndexers.find(indexer => {
+                const name = String(indexer.indexerName || '').toLowerCase();
+                return name.includes('tvdb');
+            });
+
+            if (tvdbFailure) {
+                const tvdbError = String(tvdbFailure.error || 'Unknown error').trim();
+                const message = `TVDB failed to pull results: ${tvdbError}`;
+                this.searchStatus = message;
+                this.$snotify.error(message, 'TVDB Error');
+            } else {
+                this.searchStatus = '';
+            }
+
             this.searchResults = data.results
                 .map(result => {
                     // Unpack result items 0 through 8 (Array)
@@ -430,9 +451,6 @@ export default {
                         alreadyAdded
                     };
                 });
-
-            this.searchStatus = '';
-
             this.$nextTick(() => {
                 this.$emit('navigate-step', 0);
             });
@@ -527,6 +545,11 @@ export default {
     float: left;
     padding-right: 10px;
     line-height: 40px;
+}
+
+.search-status.error {
+    color: #b02020;
+    margin: 10px 0;
 }
 
 @media (max-width: 768px) {

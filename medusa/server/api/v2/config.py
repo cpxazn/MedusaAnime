@@ -526,6 +526,7 @@ class ConfigHandler(BaseRequestHandler):
         'anime.anidb.useMylist': BooleanField(app, 'ANIDB_USE_MYLIST'),
         'anime.autoAnimeToList': BooleanField(app, 'AUTO_ANIME_TO_LIST'),
         'anime.showlistDefaultAnime': ListField(app, 'SHOWLISTS_DEFAULT_ANIME'),
+        'anime.preferredReleaseGroups': ListField(app, 'PREFERRED_ANIME_RELEASE_GROUPS'),
 
         'subtitles.multi': BooleanField(app, 'SUBTITLES_MULTI'),
         'subtitles.enabled': BooleanField(app, 'USE_SUBTITLES'),
@@ -1348,7 +1349,8 @@ class DataGenerator(object):
                 'useMylist': bool(app.ANIDB_USE_MYLIST)
             },
             'autoAnimeToList': bool(app.AUTO_ANIME_TO_LIST),
-            'showlistDefaultAnime': app.SHOWLISTS_DEFAULT_ANIME
+            'showlistDefaultAnime': app.SHOWLISTS_DEFAULT_ANIME,
+            'preferredReleaseGroups': list(app.PREFERRED_ANIME_RELEASE_GROUPS)
         }
 
     @staticmethod

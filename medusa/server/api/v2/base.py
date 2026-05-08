@@ -351,9 +351,13 @@ class BaseRequestHandler(RequestHandler):
             if arg_sort:
                 # Compare to earliest datetime instead of None
                 def safe_compare(field, results):
-                    if field == 'airDate' and results[field] is None:
-                        return text_type(datetime.min)
-                    return results[field]
+                    value = results.get(field) if isinstance(results, dict) else results[field]
+                    if value is None:
+                        # For airDate use datetime.min string; for numeric/other fields use a low sentinel
+                        if field == 'airDate':
+                            return text_type(datetime.min)
+                        return ''
+                    return value
 
                 try:
                     for field, reverse in reversed(arg_sort):

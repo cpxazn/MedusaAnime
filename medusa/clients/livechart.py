@@ -25,13 +25,23 @@ class LiveChartClient(AnimeSource):
     BASE_URL = 'https://www.livechart.me'
     SEARCH_URL = f'{BASE_URL}/search?q={{query}}'
     ANIME_URL = f'{BASE_URL}/anime/{{anime_id}}'
-    SEASONAL_URL = f'{BASE_URL}/upcoming'
+    # Seasonal URL pattern: /spring-2026/tv  (/ for current season)
+    SEASONAL_URL = f'{BASE_URL}/{{season}}-{{year}}/tv'
+    CURRENT_SEASON_URL = BASE_URL + '/'
     RATE_LIMIT = 5  # requests per second
+
+    # Map internal season names to livechart URL slugs
+    SEASON_SLUG = {
+        'WINTER': 'winter',
+        'SPRING': 'spring',
+        'SUMMER': 'summer',
+        'FALL': 'fall',
+    }
 
     def __init__(self):
         """Initialize the LiveChart client."""
         self.session = MedusaSession()
-        self.session.update_headers({
+        self.session.headers.update({
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         })
@@ -80,11 +90,11 @@ class LiveChartClient(AnimeSource):
             if anime:
                 results.append(anime)
 
-        # Also try searching within the upcoming list
+        # Also try searching within the current season page
         if not results:
-            upcoming_soup = self._get(self.SEASONAL_URL)
-            if upcoming_soup:
-                results.extend(self._parse_anime_list(upcoming_soup))
+            current_soup = self._get(self.CURRENT_SEASON_URL)
+            if current_soup:
+                results.extend(self._parse_anime_list(current_soup))
 
         return results
 
@@ -99,11 +109,15 @@ class LiveChartClient(AnimeSource):
             List of AnimeSeries for the season
         """
         results = []
-        
-        # LiveChart.me doesn't have direct seasonal URLs
-        # Use upcoming page and filter by season/year
-        soup = self._get(self.SEASONAL_URL)
-        
+
+        # Build the season-specific URL: /spring-2026/tv
+        season_slug = self.SEASON_SLUG.get((season or '').upper())
+        if season_slug:
+            url = self.SEASONAL_URL.format(season=season_slug, year=year)
+        else:
+            url = self.CURRENT_SEASON_URL
+
+        soup = self._get(url)
         if soup:
             results = self._parse_anime_list(soup, year, season)
 
@@ -135,49 +149,199 @@ class LiveChartClient(AnimeSource):
         Returns:
             List of upcoming AnimeSeries objects
         """
-        soup = self._get(self.SEASONAL_URL)
-        
+        soup = self._get(self.CURRENT_SEASON_URL)
+
         if not soup:
             return []
 
         return self._parse_anime_list(soup, limit=limit)
 
+    def _parse_anime_from_article(self, article, year: Optional[int] = None,
+                                  season: Optional[str] = None) -> Optional[AnimeSeries]:
+        """Parse anime data from a livechart.me <article class="anime"> element.
+
+        livechart.me stores all key metadata as data-* attributes on the article tag,
+        with synopsis in div.anime-synopsis and image in div.poster-container > img.
+
+        Args:
+            article: BeautifulSoup <article class="anime"> element
+            year: Season year (passed from the API query, not parsed from HTML)
+            season: Season name e.g. 'SPRING' (passed from the API query)
+
+        Returns:
+            AnimeSeries or None
+        """
+        try:
+            # --- IDs and titles from data attributes ---
+            anime_id_str = article.get('data-anime-id')
+            if not anime_id_str:
+                return None
+            anime_id = int(anime_id_str)
+
+            title_romanji = article.get('data-romaji') or None
+            title_english = article.get('data-english') or None
+            title_japanese = article.get('data-native') or None
+
+            # --- Image ---
+            poster_div = article.find('div', class_='poster-container')
+            img = poster_div.find('img') if poster_div else None
+            image_url = img.get('src') or img.get('data-src') if img else None
+
+            # --- Synopsis ---
+            synopsis_div = article.find('div', class_='anime-synopsis')
+            synopsis = synopsis_div.get_text(strip=True) if synopsis_div else None
+
+            # --- Anime type from schedule info: e.g. "EP6 · TV (JP)" ---
+            anime_type = 'TV'
+            next_episode_number = None
+            next_episode_countdown = None
+            sched_div = article.find('div', class_='release-schedule-info')
+            if sched_div:
+                sched_text = sched_div.get_text(' ', strip=True)
+                type_match = re.search(
+                    r'\b(TV Special|TV|Movie|OVA|ONA|OND|Short)\b', sched_text, re.I
+                )
+                if type_match:
+                    anime_type = type_match.group(1)
+
+                ep_match = re.search(r'\bEP\s*(\d+)\b', sched_text, re.I)
+                if ep_match:
+                    try:
+                        next_episode_number = int(ep_match.group(1))
+                    except ValueError:
+                        pass
+
+                countdown_match = re.search(r'(\d+d\s+\d+h\s+\d+m\s+\d+s|Released)', sched_text, re.I)
+                if countdown_match:
+                    next_episode_countdown = countdown_match.group(1)
+
+            # --- Score ---
+            score = None
+            score_div = article.find('div', class_='anime-avg-user-rating')
+            if score_div:
+                try:
+                    score = float(score_div.get_text(strip=True))
+                except (ValueError, TypeError):
+                    pass
+
+            # --- Genres from tag links (/tags/NN) ---
+            genres = [
+                a.get_text(strip=True)
+                for a in article.find_all('a', href=re.compile(r'/tags/\d+'))
+            ]
+
+            # --- Premiere date from Unix timestamp ---
+            start_date = None
+            premiere_ts = article.get('data-premiere')
+            if premiere_ts:
+                try:
+                    dt = datetime.utcfromtimestamp(int(premiere_ts))
+                    start_date = dt.strftime('%Y-%m-%d')
+                    # Only derive year/season from premiere if not supplied
+                    if year is None:
+                        year = dt.year
+                    if season is None:
+                        season = self._month_to_season(dt.month)
+                except (ValueError, TypeError, OSError):
+                    pass
+
+            # --- Episode count ---
+            episodes = None
+            episode_duration_minutes = None
+            episode_info = None
+            ep_div = article.find('div', class_='anime-episodes')
+            if ep_div:
+                episode_info = ep_div.get_text(strip=True)
+
+                ep_match = re.search(r'(\d+)\s*ep', episode_info, re.I)
+                if ep_match:
+                    try:
+                        episodes = int(ep_match.group(1))
+                    except ValueError:
+                        pass
+
+                runtime_match = re.search(r'×\s*(\d+)\s*m', episode_info, re.I)
+                if runtime_match:
+                    try:
+                        episode_duration_minutes = int(runtime_match.group(1))
+                    except ValueError:
+                        pass
+
+            # --- Studio names ---
+            studios = [
+                a.get_text(strip=True)
+                for a in article.find_all('a', href=re.compile(r'/studios/\d+'))
+            ]
+
+            # --- Upcoming/air date text ---
+            next_episode_release = None
+            date_div = article.find('div', class_='anime-date')
+            if date_div:
+                next_episode_release = date_div.get_text(' ', strip=True)
+
+            return AnimeSeries(
+                anime_id=anime_id,
+                source='livechart',
+                title_romanji=title_romanji,
+                title_english=title_english,
+                title_japanese=title_japanese,
+                synopsis=synopsis,
+                anime_type=anime_type,
+                image_url=image_url,
+                score=score,
+                genres=genres,
+                studios=studios,
+                season=season,
+                year=year,
+                start_date=start_date,
+                episodes=episodes,
+                episode_duration_minutes=episode_duration_minutes,
+                episode_info=episode_info,
+                next_episode_number=next_episode_number,
+                next_episode_release=next_episode_release,
+                next_episode_countdown=next_episode_countdown,
+                url='{base}/anime/{id}'.format(base=self.BASE_URL, id=anime_id),
+            )
+        except Exception as error:
+            log.debug('Failed to parse anime article: {error}', error=error)
+            return None
+
     def _parse_anime_from_card(self, card) -> Optional[AnimeSeries]:
         """Parse anime data from a search result card.
-        
+
+        Delegates to _parse_anime_from_article when the element is an
+        <article class="anime">, otherwise falls back to link-based parsing.
+
         Args:
             card: BeautifulSoup element representing an anime card
-            
+
         Returns:
             AnimeSeries object or None
         """
+        # Prefer the structured article format
+        if card.name == 'article' and 'anime' in (card.get('class') or []):
+            return self._parse_anime_from_article(card)
+
         try:
-            # Get the link to the anime page
-            link = card.find('a', href=True)
+            # Fallback: find the title link by anime URL pattern
+            link = card.find('a', href=re.compile(r'/anime/\d+$'))
+            if not link:
+                link = card.find('a', href=True)
             if not link:
                 return None
 
             href = link['href']
-            # Extract anime ID from URL
             anime_id_match = re.search(r'/anime/(\d+)', href)
             if not anime_id_match:
                 return None
 
             anime_id = int(anime_id_match.group(1))
-            
-            # Get title
-            title_elem = link.find(['h3', 'h4', 'span', 'div'], class_=re.compile(r'title|name', re.I))
-            if not title_elem:
-                title_elem = link.find(['h3', 'h4', 'span'])
-            
-            title = title_elem.get_text(strip=True) if title_elem else None
+            title = link.get_text(strip=True) or None
 
-            # Get image
-            img = link.find('img')
+            img = card.find('img')
             image_url = img.get('src') or img.get('data-src') if img else None
 
-            # Build full URL
-            url = f"{self.BASE_URL}{href}" if href.startswith('/') else href
+            url = '{base}{href}'.format(base=self.BASE_URL, href=href) if href.startswith('/') else href
 
             return AnimeSeries(
                 anime_id=anime_id,
@@ -190,46 +354,30 @@ class LiveChartClient(AnimeSource):
             log.debug('Failed to parse anime card: {error}', error=error)
             return None
 
-    def _parse_anime_list(self, soup: BeautifulSoup, year: Optional[int] = None, 
+    def _parse_anime_list(self, soup: BeautifulSoup, year: Optional[int] = None,
                           season: Optional[str] = None, limit: Optional[int] = None) -> List[AnimeSeries]:
-        """Parse a list of anime from HTML.
-        
+        """Parse a list of anime from a livechart.me seasonal page.
+
         Args:
-            soup: Parsed HTML
-            year: Optional year filter
-            season: Optional season filter
-            limit: Optional result limit
-            
+            soup: Parsed HTML of the seasonal page
+            year: Year for the season (e.g. 2026); set on every returned AnimeSeries
+            season: Season name (e.g. 'SPRING'); set on every returned AnimeSeries
+            limit: Optional maximum number of results
+
         Returns:
             List of AnimeSeries objects
         """
         results = []
-        
-        # Find anime entries - livechart.me uses various classes
-        anime_entries = soup.find_all(['article', 'div'], class_=re.compile(r'anime|series|card', re.I))
-        
-        if not anime_entries:
-            # Try alternative selectors
-            anime_entries = soup.find_all('a', href=re.compile(r'/anime/\d+'))
 
-        for entry in anime_entries:
+        # livechart.me wraps each anime in <article class="anime">
+        articles = soup.find_all('article', class_='anime')
+
+        for article in articles:
             if limit and len(results) >= limit:
                 break
 
-            anime = self._parse_anime_from_card(entry)
-            if not anime:
-                # Try parsing as a link
-                link = entry.find('a', href=True) if hasattr(entry, 'find') else None
-                if link:
-                    anime = self._parse_anime_from_card(link)
-            
+            anime = self._parse_anime_from_article(article, year=year, season=season)
             if anime:
-                # Apply filters
-                if year and anime.year and anime.year != year:
-                    continue
-                if season and anime.season and anime.season.upper() != season.upper():
-                    continue
-                
                 results.append(anime)
 
         return results
@@ -247,39 +395,44 @@ class LiveChartClient(AnimeSource):
         anime = AnimeSeries(anime_id=anime_id, source='livechart')
 
         try:
-            # Get the main anime title section
+            # --- Try JSON-LD structured data first (most reliable) ---
+            ld_json = self._extract_ld_json(soup)
+            if ld_json:
+                self._apply_ld_json(anime, ld_json)
+
+            # --- HTML-based title extraction (only if JSON-LD was absent/incomplete) ---
             title_section = soup.find('section', id=re.compile(r'anime-title', re.I))
             if not title_section:
-                # Try alternative selectors
-                title_section = soup.find('section') or soup
+                title_section = soup.find('h1') or soup.find('h2')
 
-            # Japanese title
-            jp_title = title_section.find(string=re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]', re.U))
-            if jp_title:
-                anime.title_japanese = jp_title.strip()
+            if title_section:
+                # Only look for Japanese text in real content elements, never in <script>/<style>
+                for s in title_section.find_all(string=re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]', re.U)):
+                    if s.parent and s.parent.name not in ('script', 'style'):
+                        if not anime.title_japanese:
+                            anime.title_japanese = s.strip()
+                        break
 
-            # Romanji title
-            romanji_elem = title_section.find(class_=re.compile(r'romanji|title-romanji', re.I))
-            if romanji_elem:
-                anime.title_romanji = romanji_elem.get_text(strip=True)
-            
-            # English title
-            english_elem = title_section.find(class_=re.compile(r'english|title-english', re.I))
-            if english_elem:
-                anime.title_english = english_elem.get_text(strip=True)
+                romanji_elem = title_section.find(class_=re.compile(r'romanji|title-romanji', re.I))
+                if romanji_elem and not anime.title_romanji:
+                    anime.title_romanji = romanji_elem.get_text(strip=True)
 
-            # Synonyms
-            synonym_elem = title_section.find(class_=re.compile(r'synonym', re.I))
-            if synonym_elem:
-                syns = synonym_elem.get_text(strip=True)
-                anime.title_synonyms = [s.strip() for s in syns.split(',') if s.strip()]
+                english_elem = title_section.find(class_=re.compile(r'english|title-english', re.I))
+                if english_elem and not anime.title_english:
+                    anime.title_english = english_elem.get_text(strip=True)
+
+                synonym_elem = title_section.find(class_=re.compile(r'synonym', re.I))
+                if synonym_elem:
+                    syns = synonym_elem.get_text(strip=True)
+                    anime.title_synonyms = [s.strip() for s in syns.split(',') if s.strip()]
 
             # Synopsis/Description
-            desc_section = soup.find('section', id=re.compile(r'anime-description|synopsis', re.I))
-            if not desc_section:
-                desc_section = soup.find('section', class_=re.compile(r'description|synopsis', re.I))
-            if desc_section:
-                anime.synopsis = desc_section.get_text(strip=True)
+            if not anime.synopsis:
+                desc_section = soup.find('section', id=re.compile(r'anime-description|synopsis', re.I))
+                if not desc_section:
+                    desc_section = soup.find('section', class_=re.compile(r'description|synopsis', re.I))
+                if desc_section:
+                    anime.synopsis = desc_section.get_text(strip=True)
 
             # Get anime metadata from the info section
             info_section = soup.find('section', id=re.compile(r'anime-info', re.I))
@@ -299,10 +452,100 @@ class LiveChartClient(AnimeSource):
             # Get URL
             anime.url = f"{self.BASE_URL}/anime/{anime_id}"
 
+            # External IDs (AniDB, AniList, MAL, TVDB)
+            for link in soup.find_all('a', href=True):
+                href = (link.get('href') or '').replace('&amp;', '&')
+                if not href:
+                    continue
+
+                if 'anidb.net' in href and not anime.anidb_id:
+                    anidb_match = re.search(r'aid=(\d+)', href)
+                    if anidb_match:
+                        anime.anidb_id = int(anidb_match.group(1))
+
+                if 'anilist.co/anime/' in href and not anime.anilist_id:
+                    anilist_match = re.search(r'/anime/(\d+)', href)
+                    if anilist_match:
+                        anime.anilist_id = int(anilist_match.group(1))
+
+                if 'myanimelist.net/anime/' in href and not anime.mal_id:
+                    mal_match = re.search(r'/anime/(\d+)', href)
+                    if mal_match:
+                        anime.mal_id = int(mal_match.group(1))
+
+                if 'thetvdb.com' in href and not anime.tvdb_id:
+                    tvdb_match = re.search(r'/series/(\d+)', href)
+                    if tvdb_match:
+                        anime.tvdb_id = int(tvdb_match.group(1))
+
         except Exception as error:
             log.debug('Failed to parse anime details for ID {anime_id}: {error}', anime_id=anime_id, error=error)
 
         return anime
+
+    def _extract_ld_json(self, soup: BeautifulSoup) -> Optional[dict]:
+        """Extract and parse the first application/ld+json script block from the page."""
+        import json
+        script = soup.find('script', type='application/ld+json')
+        if not script:
+            return None
+        try:
+            return json.loads(script.get_text())
+        except Exception:
+            return None
+
+    def _apply_ld_json(self, anime: AnimeSeries, ld: dict) -> None:
+        """Populate AnimeSeries fields from a schema.org JSON-LD object."""
+        import re as _re
+
+        # schema.org TVSeries / Movie: 'name' is typically the romanji/primary title
+        name = ld.get('name') or ''
+        if name:
+            anime.title_romanji = name
+
+        alternate_names = ld.get('alternateName') or []
+        if isinstance(alternate_names, str):
+            alternate_names = [alternate_names]
+
+        jp_re = _re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uff00-\uffef]')
+        for alt in alternate_names:
+            if jp_re.search(alt) and not anime.title_japanese:
+                anime.title_japanese = alt
+            elif not jp_re.search(alt) and not anime.title_english and alt != name:
+                anime.title_english = alt
+
+        description = ld.get('description') or ''
+        if description:
+            anime.synopsis = description
+
+        episodes = ld.get('numberOfEpisodes')
+        if episodes and not anime.episodes:
+            try:
+                anime.episodes = int(episodes)
+            except (TypeError, ValueError):
+                pass
+
+        date_published = ld.get('datePublished') or ''
+        if date_published and not anime.start_date:
+            anime.start_date = date_published[:10]
+            try:
+                anime.year = int(date_published[:4])
+            except (TypeError, ValueError):
+                pass
+
+        genres = ld.get('genre') or []
+        if isinstance(genres, str):
+            genres = [genres]
+        if genres and not anime.genres:
+            anime.genres = genres
+
+        image = ld.get('image') or ''
+        if image and not anime.image_url:
+            anime.image_url = image
+
+        url = ld.get('url') or ''
+        if url and not anime.url:
+            anime.url = url
 
     def _parse_anime_info(self, info_section, anime: AnimeSeries) -> AnimeSeries:
         """Parse anime metadata from info section.

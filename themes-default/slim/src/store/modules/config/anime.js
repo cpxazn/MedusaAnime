@@ -8,7 +8,8 @@ const state = {
         useMylist: false
     },
     autoAnimeToList: false,
-    showlistDefaultAnime: []
+    showlistDefaultAnime: [],
+    preferredReleaseGroups: []
 };
 
 const mutations = {

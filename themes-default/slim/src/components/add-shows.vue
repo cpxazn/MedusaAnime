@@ -15,6 +15,14 @@
                 <p>Use this option to add shows that already have a folder created on your hard drive. Medusa will scan your existing metadata/episodes and add the show accordingly.</p>
             </div>
         </app-link>
+
+        <app-link href="addShows/anime/" id="btnAddAnime" class="btn-medusa btn-large">
+            <div class="button"><div class="add-list-icon-addanime" /></div>
+            <div class="buttontext">
+                <h3>Add Anime</h3>
+                <p>Browse seasonal anime from LiveChart/MyAnimeList with posters and synopsis, then open Add New Show with anime defaults prefilled.</p>
+            </div>
+        </app-link>
     </div>
 </template>
 <script>

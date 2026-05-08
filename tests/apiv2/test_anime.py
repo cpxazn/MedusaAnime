@@ -359,7 +359,9 @@ class TestAnimeToJson:
         expected_keys = {
             'animeId', 'source', 'titleJapanese', 'titleRomanji', 'titleEnglish',
             'titleSynonyms', 'synopsis', 'animeType', 'status', 'startDate', 'endDate',
-            'season', 'year', 'episodes', 'score', 'genres', 'tags', 'imageUrl',
+            'season', 'year', 'episodes', 'episodeDurationMinutes', 'episodeInfo',
+            'score', 'genres', 'tags', 'studios',
+            'nextEpisodeNumber', 'nextEpisodeRelease', 'nextEpisodeCountdown', 'imageUrl',
             'anidbId', 'anilistId', 'tvdbId', 'malId', 'url', 'displayTitle', 'directoryName',
         }
         assert expected_keys == set(result.keys())

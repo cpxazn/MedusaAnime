@@ -58,6 +58,14 @@ export default {
             type: String,
             required: true
         },
+        altShowName: {
+            type: String,
+            default: ''
+        },
+        anidbId: {
+            type: Number,
+            default: null
+        },
         blacklist: {
             type: Array,
             default: () => []
@@ -83,6 +91,36 @@ export default {
 
         this.fetchGroups();
     },
+    computed: {
+        ...mapState({
+            anime: state => state.config.anime,
+            layout: state => state.config.layout,
+            client: state => state.auth.client
+        }),
+        itemsWhitelist() {
+            return this.allReleaseGroups.filter(x => x.memberOf === 'whitelist');
+        },
+        itemsBlacklist() {
+            return this.allReleaseGroups.filter(x => x.memberOf === 'blacklist');
+        },
+        itemsReleaseGroups() {
+            return this.allReleaseGroups.filter(x => x.memberOf === 'releasegroups');
+        },
+        showDeleteFromWhitelist() {
+            return this.allReleaseGroups
+                .filter(x => x.memberOf === 'whitelist' && x.toggled === true)
+                .length !== 0;
+        },
+        showDeleteFromBlacklist() {
+            return this.allReleaseGroups
+                .filter(x => x.memberOf === 'blacklist' && x.toggled === true)
+                .length !== 0;
+        },
+        preferredReleaseGroups() {
+            const groups = this.anime && this.anime.preferredReleaseGroups;
+            return Array.isArray(groups) ? groups : [];
+        }
+    },
     methods: {
         async fetchGroups() {
             const { showName } = this;
@@ -97,6 +135,14 @@ export default {
                 series_name: showName // eslint-disable-line camelcase
             };
 
+            if (this.altShowName) {
+                params.romanji_name = this.altShowName; // eslint-disable-line camelcase
+            }
+
+            if (Number.isInteger(this.anidbId) && this.anidbId > 0) {
+                params.anidb_id = this.anidbId; // eslint-disable-line camelcase
+            }
+
             try {
                 const { data } = await this.client.apiRoute.get('home/fetch_releasegroups', { params, timeout: 30000 });
                 if (data.result !== 'success') {
@@ -109,6 +155,33 @@ export default {
                 console.error(message);
             } finally {
                 this.fetchingGroups = false;
+            }
+        },
+        applyPreferredWhitelistPriority() {
+            // Do not override user's existing whitelist.
+            if (this.itemsWhitelist.length > 0) {
+                return;
+            }
+
+            if (!this.preferredReleaseGroups.length) {
+                return;
+            }
+
+            for (const preferredName of this.preferredReleaseGroups) {
+                const normalizedPreferred = String(preferredName || '').trim().toLowerCase();
+                if (!normalizedPreferred) {
+                    continue;
+                }
+
+                const candidate = this.allReleaseGroups.find(group => {
+                    return String(group.name || '').trim().toLowerCase() === normalizedPreferred;
+                });
+
+                if (candidate) {
+                    candidate.toggled = false;
+                    candidate.memberOf = 'whitelist';
+                    break;
+                }
             }
         },
         toggleItem(release) {
@@ -171,33 +244,11 @@ export default {
             this.allReleaseGroups = this.allReleaseGroups.filter(x => x.memberOf !== list || !x.toggled);
         }
     },
-    computed: {
-        ...mapState({
-            layout: state => state.config.layout,
-            client: state => state.auth.client
-        }),
-        itemsWhitelist() {
-            return this.allReleaseGroups.filter(x => x.memberOf === 'whitelist');
-        },
-        itemsBlacklist() {
-            return this.allReleaseGroups.filter(x => x.memberOf === 'blacklist');
-        },
-        itemsReleaseGroups() {
-            return this.allReleaseGroups.filter(x => x.memberOf === 'releasegroups');
-        },
-        showDeleteFromWhitelist() {
-            return this.allReleaseGroups
-                .filter(x => x.memberOf === 'whitelist' && x.toggled === true)
-                .length !== 0;
-        },
-        showDeleteFromBlacklist() {
-            return this.allReleaseGroups
-                .filter(x => x.memberOf === 'blacklist' && x.toggled === true)
-                .length !== 0;
-        }
-    },
     watch: {
         showName() {
+            this.fetchGroups();
+        },
+        altShowName() {
             this.fetchGroups();
         },
         allReleaseGroups: {
@@ -219,6 +270,10 @@ export default {
         },
         remoteGroups(newGroups) {
             this.createIndexedObjects(newGroups, 'releasegroups');
+            this.applyPreferredWhitelistPriority();
+        },
+        preferredReleaseGroups() {
+            this.applyPreferredWhitelistPriority();
         }
     }
 };
