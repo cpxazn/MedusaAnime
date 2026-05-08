@@ -1,0 +1,39 @@
+# .github/workflows/sync-upstream.yml
+name: Sync upstream & rebase feature branch
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # daily at 04:00 UTC
+  workflow_dispatch:       # manual trigger from GitHub UI
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/livechart-integration
+          fetch-depth: 0        # full history needed for rebase
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/pymedusa/Medusa.git
+          git fetch upstream master
+
+      - name: Reset fork master
+        run: |
+          git checkout master
+          git reset --hard upstream/master
+          git push origin master --force-with-lease
+
+      - name: Rebase feature branch
+        run: |
+          git checkout feature/livechart-integration
+          git rebase upstream/master
+          git push origin feature/livechart-integration --force-with-lease
