@@ -73,28 +73,44 @@ class LiveChartClient(AnimeSource):
             List of matching AnimeSeries objects
         """
         results = []
-        
+        if not query:
+            return results
+
+        def normalize(value):
+            return re.sub(r'[^a-z0-9]+', ' ', (value or '').strip().lower()).strip()
+
+        def matches_query(anime_obj):
+            needle = normalize(query)
+            if not needle:
+                return True
+
+            haystacks = [
+                normalize(anime_obj.title_romanji),
+                normalize(anime_obj.title_english),
+                normalize(anime_obj.title_japanese),
+                normalize(anime_obj.display_title),
+            ]
+            return any(h and needle in h for h in haystacks)
+
         # Build search URL - livechart.me uses /search?q=query
         search_url = self.SEARCH_URL.format(query=query)
         soup = self._get(search_url)
-        
+
         if not soup:
             return results
 
-        # Parse search results from livechart.me
-        # Search results are typically in a list or grid
-        anime_cards = soup.find_all('a', class_=re.compile(r'anime-card|anime-link|series-link', re.I))
-        
-        for card in anime_cards[:20]:  # Limit results
-            anime = self._parse_anime_from_card(card)
-            if anime:
-                results.append(anime)
+        # Parse structured article cards first (preferred).
+        anime_cards = soup.find_all('article', class_='anime')
+        if not anime_cards:
+            # Fallback: link-based search results.
+            anime_cards = soup.find_all('a', href=re.compile(r'/anime/\d+'))
 
-        # Also try searching within the current season page
-        if not results:
-            current_soup = self._get(self.CURRENT_SEASON_URL)
-            if current_soup:
-                results.extend(self._parse_anime_list(current_soup))
+        seen = set()
+        for card in anime_cards[:100]:
+            anime = self._parse_anime_from_card(card)
+            if anime and anime.anime_id not in seen and matches_query(anime):
+                seen.add(anime.anime_id)
+                results.append(anime)
 
         return results
 
@@ -324,7 +340,10 @@ class LiveChartClient(AnimeSource):
 
         try:
             # Fallback: find the title link by anime URL pattern
-            link = card.find('a', href=re.compile(r'/anime/\d+$'))
+            if card.name == 'a' and card.get('href'):
+                link = card
+            else:
+                link = card.find('a', href=re.compile(r'/anime/\d+$'))
             if not link:
                 link = card.find('a', href=True)
             if not link:
@@ -338,7 +357,13 @@ class LiveChartClient(AnimeSource):
             anime_id = int(anime_id_match.group(1))
             title = link.get_text(strip=True) or None
 
-            img = card.find('img')
+            # Search pages often keep poster <img> outside the title <a>; look up to list item.
+            if card.name == 'a':
+                image_root = card.find_parent('li') or card.parent
+            else:
+                image_root = card
+
+            img = image_root.find('img') if image_root else None
             image_url = img.get('src') or img.get('data-src') if img else None
 
             url = '{base}{href}'.format(base=self.BASE_URL, href=href) if href.startswith('/') else href

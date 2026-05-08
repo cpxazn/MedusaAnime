@@ -77,26 +77,69 @@ class MyAnimeListClient(AnimeSource):
             List of matching AnimeSeries objects
         """
         results = []
-        
+
         # Build search URL - MAL uses /anime.php?q=query
         search_url = self.SEARCH_URL.format(query=query)
         soup = self._get(search_url)
-        
+
         if not soup:
             return results
 
-        # Parse search results from MAL
-        # MAL search results are in a table with class 'js-categories-seasonal' or similar
-        anime_items = soup.find_all('div', class_='js-categories-seasonal')
-        
-        if not anime_items:
-            # Try alternative selectors for search results
-            anime_items = soup.find_all('div', class_='information')
-        
-        for item in anime_items[:20]:  # Limit results
-            anime = self._parse_search_result(item)
-            if anime:
-                results.append(anime)
+        # MAL search pages contain many /anime/<id> links per result card
+        # (title link, image link, read more, etc.). Build one result per anime id.
+        links = soup.find_all('a', href=re.compile(r'/anime/\d+'))
+        anime_map = {}
+
+        for link in links:
+            href = link.get('href', '')
+            if not href or '/video' in href:
+                continue
+
+            anime_id_match = re.search(r'/anime/(\d+)', href)
+            if not anime_id_match:
+                continue
+
+            anime_id = int(anime_id_match.group(1))
+            entry = anime_map.setdefault(anime_id, {
+                'href': href,
+                'title': None,
+                'image_url': None,
+            })
+
+            text = (link.get_text(' ', strip=True) or '').strip()
+            classes = link.get('class') or []
+
+            # Prefer explicit title links and ignore helper links like "read more.".
+            if text and text.lower() != 'read more.':
+                if entry['title'] is None or 'fw-b' in classes:
+                    entry['title'] = text
+
+            # Some entries store poster on the image anchor (text-less link).
+            img = link.find('img')
+            if not img and link.parent is not None:
+                img = link.parent.find('img')
+            if img and entry['image_url'] is None:
+                entry['image_url'] = img.get('src') or img.get('data-src')
+
+        for anime_id, entry in anime_map.items():
+            title = entry['title']
+            if not title:
+                continue
+
+            href = entry['href']
+            url = href if href.startswith('http') else '{base}{href}'.format(base=self.BASE_URL, href=href)
+
+            results.append(AnimeSeries(
+                anime_id=anime_id,
+                source='myanimelist',
+                mal_id=anime_id,
+                title_english=title,
+                image_url=entry['image_url'],
+                url=url,
+            ))
+
+            if len(results) >= 60:
+                break
 
         return results
 
