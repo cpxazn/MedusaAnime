@@ -266,6 +266,18 @@ const addShowRoutes = [
         },
         props: route => ({ ...route.params }),
         component: () => import('../components/new-show.vue')
+    },
+    {
+        path: '/addShows/anime',
+        name: 'addAnime',
+        meta: {
+            title: 'Add Anime',
+            header: 'Add Anime',
+            topMenu: 'home',
+            converted: true,
+            nocache: true
+        },
+        component: () => import('../components/add-anime.vue')
     }
 ];
 

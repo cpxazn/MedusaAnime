@@ -1016,6 +1016,7 @@ class Application(object):
             app.ANIME_SPLIT_HOME_IN_TABS = bool(check_setting_int(app.CFG, 'ANIME', 'anime_split_home_in_tabs', 0))
             app.AUTO_ANIME_TO_LIST = bool(check_setting_int(app.CFG, 'ANIME', 'auto_anime_to_list', 0))
             app.SHOWLISTS_DEFAULT_ANIME = check_setting_list(app.CFG, 'ANIME', 'showlist_default_anime', [])
+            app.PREFERRED_ANIME_RELEASE_GROUPS = check_setting_list(app.CFG, 'ANIME', 'preferred_release_groups', [])
 
             app.METADATA_KODI = check_setting_list(app.CFG, 'General', 'metadata_kodi', ['0'] * 11, transform=int)
             app.METADATA_KODI_12PLUS = check_setting_list(app.CFG, 'General', 'metadata_kodi_12plus', ['0'] * 11, transform=int)
@@ -2167,6 +2168,7 @@ class Application(object):
         new_config['ANIME']['anime_split_home_in_tabs'] = int(app.ANIME_SPLIT_HOME_IN_TABS)
         new_config['ANIME']['auto_anime_to_list'] = int(app.AUTO_ANIME_TO_LIST)
         new_config['ANIME']['showlist_default_anime'] = list(app.SHOWLISTS_DEFAULT_ANIME)
+        new_config['ANIME']['preferred_release_groups'] = list(app.PREFERRED_ANIME_RELEASE_GROUPS)
 
         new_config.write()
 

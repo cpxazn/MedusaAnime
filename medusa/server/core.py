@@ -19,6 +19,7 @@ from medusa.server.api.v2.alias_source import (
     AliasSourceHandler,
     AliasSourceOperationHandler,
 )
+from medusa.server.api.v2.anime import AnimeHandler, AnimeRecommendedHandler
 from medusa.server.api.v2.auth import AuthHandler
 from medusa.server.api.v2.base import BaseRequestHandler, NotFoundHandler
 from medusa.server.api.v2.config import ConfigHandler
@@ -162,6 +163,11 @@ def get_apiv2_handlers(base):
 
         # /api/v2/recommeded
         RecommendedHandler.create_app_handler(base),
+
+        # /api/v2/anime/recommended
+        AnimeRecommendedHandler.create_app_handler(base),
+        # /api/v2/anime
+        AnimeHandler.create_app_handler(base),
 
         # Always keep this last!
         NotFoundHandler.create_app_handler(base)

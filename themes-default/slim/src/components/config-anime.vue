@@ -66,6 +66,21 @@
                                         />
                                         <span>Customize the showslist when auto anime lists is enabled</span>
                                     </config-template>
+
+                                    <config-template label-for="preferred_release_groups" label="Preferred Release Groups">
+                                        <multiselect
+                                            v-model="anime.preferredReleaseGroups"
+                                            :multiple="true"
+                                            :taggable="true"
+                                            :close-on-select="false"
+                                            :clear-on-select="false"
+                                            :preserve-search="true"
+                                            :options="anime.preferredReleaseGroups"
+                                            @tag="addPreferredReleaseGroup"
+                                            class="max-input350"
+                                        />
+                                        <span>Priority is top-to-bottom. During anime add, the first matching group is automatically whitelisted.</span>
+                                    </config-template>
                                 </fieldset><!-- .component-group-list //-->
                             </div>
                         </div><!-- row component-group //-->
@@ -109,6 +124,19 @@ export default {
             'setConfig',
             'updateShowlistDefault'
         ]),
+        addPreferredReleaseGroup(newTag) {
+            const value = (newTag || '').trim();
+            if (!value) {
+                return;
+            }
+
+            const exists = (this.anime.preferredReleaseGroups || [])
+                .some(group => String(group).toLowerCase() === value.toLowerCase());
+
+            if (!exists) {
+                this.anime.preferredReleaseGroups = [...this.anime.preferredReleaseGroups, value];
+            }
+        },
         async save() {
             const { anime, setConfig } = this;
 
