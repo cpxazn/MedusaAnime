@@ -75,6 +75,24 @@ jobs:
           git rebase "upstream/${UPSTREAM_BRANCH}"
           git push origin "${FEATURE_BRANCH}" --force-with-lease
 
+      - name: Set up Node.js 18
+        if: steps.detect.outputs.has_changes == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install frontend dependencies
+        if: steps.detect.outputs.has_changes == 'true'
+        working-directory: ./themes-default/slim
+        run: |
+          npm install --legacy-peer-deps --ignore-scripts
+          npm install ajv@^8 --legacy-peer-deps --ignore-scripts
+
+      - name: Build frontend assets
+        if: steps.detect.outputs.has_changes == 'true'
+        working-directory: ./themes-default/slim
+        run: npm run build
+
       - name: Create tag for sync release
         if: steps.detect.outputs.has_changes == 'true'
         id: tag
