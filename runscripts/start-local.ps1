@@ -8,7 +8,7 @@ param(
     # Path to a Node 18 binary directory (e.g. "C:\node18"). If set, this is
     # prepended to PATH only for the npm install / build steps so the system
     # Node is not affected.
-    [string]$Node18Path = ""
+    [string]$Node18Path = "J:\Downloads\node-v18.20.8-win-x64"
 )
 
 Set-StrictMode -Version Latest
