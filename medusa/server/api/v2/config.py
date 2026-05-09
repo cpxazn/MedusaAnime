@@ -164,6 +164,7 @@ class ConfigHandler(BaseRequestHandler):
 
         'logs.debug': BooleanField(app, 'DEBUG'),
         'logs.dbDebug': BooleanField(app, 'DBDEBUG'),
+        'logs.apiTiming': BooleanField(app, 'WEB_API_TIMING'),
         'logs.actualLogDir': StringField(app, 'ACTUAL_LOG_DIR'),
         'logs.nr': IntegerField(app, 'LOG_NR'),
         'logs.size': FloatField(app, 'LOG_SIZE'),
@@ -492,6 +493,7 @@ class ConfigHandler(BaseRequestHandler):
         'layout.comingEps.layout': StringField(app, 'COMING_EPS_LAYOUT'),
         'layout.comingEps.sort': StringField(app, 'COMING_EPS_SORT'),
         'layout.comingEps.displayPaused': BooleanField(app, 'COMING_EPS_DISPLAY_PAUSED'),
+        'layout.showActiveOnly': BooleanField(app, 'SHOW_ACTIVE_ONLY'),
         'layout.schedule': EnumField(app, 'COMING_EPS_LAYOUT', ('poster', 'banner', 'list', 'calendar'),
                                      default_value='banner', post_processor=layout_schedule_post_processor),
         'layout.history': EnumField(app, 'HISTORY_LAYOUT', ('compact', 'detailed'), default_value='detailed'),
@@ -682,6 +684,7 @@ class DataGenerator(object):
         section_data['logs'] = {}
         section_data['logs']['debug'] = bool(app.DEBUG)
         section_data['logs']['dbDebug'] = bool(app.DBDEBUG)
+        section_data['logs']['apiTiming'] = bool(app.WEB_API_TIMING)
         section_data['logs']['loggingLevels'] = {k.lower(): v for k, v in iteritems(logger.LOGGING_LEVELS)}
         section_data['logs']['numErrors'] = len(classes.ErrorViewer.errors)
         section_data['logs']['numWarnings'] = len(classes.WarningViewer.errors)

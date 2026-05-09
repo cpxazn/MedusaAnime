@@ -572,6 +572,7 @@ class Application(object):
             app.WEB_IPV6 = bool(check_setting_int(app.CFG, 'General', 'web_ipv6', 0))
             app.WEB_ROOT = check_setting_str(app.CFG, 'General', 'web_root', '').rstrip('/')
             app.WEB_LOG = bool(check_setting_int(app.CFG, 'General', 'web_log', 0))
+            app.WEB_API_TIMING = bool(check_setting_int(app.CFG, 'General', 'web_api_timing', 0))
             app.WEB_USERNAME = check_setting_str(app.CFG, 'General', 'web_username', '', censor_log='normal')
             app.WEB_PASSWORD = check_setting_str(app.CFG, 'General', 'web_password', '', censor_log='low')
             app.WEB_COOKIE_SECRET = check_setting_str(app.CFG, 'General', 'web_cookie_secret', helpers.generate_cookie_secret(), censor_log='low')
@@ -1053,6 +1054,7 @@ class Application(object):
             app.LAYOUT_WIDE = check_setting_bool(app.CFG, 'GUI', 'layout_wide', 0)
             app.SHOW_LIST_ORDER = check_setting_list(app.CFG, 'GUI', 'show_list_order', app.SHOW_LIST_ORDER)
             app.SHOW_USE_PAGINATION = check_setting_bool(app.CFG, 'GUI', 'show_use_pagination', app.SHOW_USE_PAGINATION)
+            app.SHOW_ACTIVE_ONLY = check_setting_bool(app.CFG, 'GUI', 'show_active_only', app.SHOW_ACTIVE_ONLY)
 
             app.FALLBACK_PLEX_ENABLE = check_setting_int(app.CFG, 'General', 'fallback_plex_enable', 1)
             app.FALLBACK_PLEX_NOTIFICATIONS = check_setting_int(app.CFG, 'General', 'fallback_plex_notifications', 1)
@@ -1614,6 +1616,7 @@ class Application(object):
         new_config['General']['web_host'] = app.WEB_HOST
         new_config['General']['web_ipv6'] = int(app.WEB_IPV6)
         new_config['General']['web_log'] = int(app.WEB_LOG)
+        new_config['General']['web_api_timing'] = int(app.WEB_API_TIMING)
         new_config['General']['web_root'] = app.WEB_ROOT
         new_config['General']['web_username'] = app.WEB_USERNAME
         new_config['General']['web_password'] = helpers.encrypt(app.WEB_PASSWORD, app.ENCRYPTION_VERSION)
@@ -2119,6 +2122,7 @@ class Application(object):
         new_config['GUI']['layout_wide'] = app.LAYOUT_WIDE
         new_config['GUI']['show_list_order'] = app.SHOW_LIST_ORDER
         new_config['GUI']['show_use_pagination'] = app.SHOW_USE_PAGINATION
+        new_config['GUI']['show_active_only'] = int(app.SHOW_ACTIVE_ONLY)
 
         new_config['Subtitles'] = {}
         new_config['Subtitles']['use_subtitles'] = int(app.USE_SUBTITLES)

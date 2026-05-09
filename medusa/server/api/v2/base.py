@@ -53,6 +53,7 @@ def make_async(instance, method):
     @coroutine
     def async_call(self, *args, **kwargs):
         """Call the actual HTTP method asynchronously."""
+        import time as _time
         content = self._check_authentication()
         if content is not None:
             self.finish(content)
@@ -61,9 +62,17 @@ def make_async(instance, method):
         # Authentication check passed, run the method in a thread
         # On Python 3+, exceptions contain their original stack trace.
         prepared = partial(method, *args, **kwargs)
+        start = _time.time()
         content = yield IOLoop.current().run_in_executor(executor, prepared)
-
+        elapsed = _time.time() - start
         self.finish(content)
+
+        if app.WEB_API_TIMING:
+            log.debug('API request {method} {path} completed in {elapsed:.3f}s', {
+                'method': self.request.method,
+                'path': self.request.path,
+                'elapsed': elapsed,
+            })
 
     # This creates a bound method `instance.async_call`,
     # so that it could substitute the original method in the class instance.
