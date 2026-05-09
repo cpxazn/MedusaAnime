@@ -316,6 +316,11 @@ const getters = {
         // Filter root dirs
         shows = showsWithStats.filter(show => selectedRootIndex === -1 || show.config.location.includes(rootDirs.slice(1)[selectedRootIndex]));
 
+        // Filter active shows only
+        if (layout.showActiveOnly) {
+            shows = shows.filter(show => !show.config.paused && show.status !== 'Ended');
+        }
+
         // Filter by text for the banner, simple and smallposter layouts.
         // The Poster layout uses vue-isotope and this does not respond well to changes to the `list` property.
         if (layout.home !== 'poster') {
