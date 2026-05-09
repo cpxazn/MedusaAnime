@@ -83,6 +83,18 @@ export const showlistTableMixin = {
                 type: 'boolean',
                 hidden: getCookie('Active')
             }, {
+                label: 'Paused',
+                field: this.fealdFnPaused,
+                filterOptions: {
+                    enabled: true,
+                    filterDropdownItems: [
+                        { value: true, text: 'yes' },
+                        { value: false, text: 'no' }
+                    ]
+                },
+                type: 'boolean',
+                hidden: getCookie('Paused')
+            }, {
                 label: 'Status',
                 field: 'status',
                 filterOptions: {
@@ -146,6 +158,9 @@ export const showlistTableMixin = {
         },
         fealdFnActive(row) {
             return row.config && !row.config.paused && row.status === 'Continuing';
+        },
+        fealdFnPaused(row) {
+            return !!(row.config && row.config.paused);
         },
         sortDateNext(x, y) {
             const { maxNextAirDate } = this;

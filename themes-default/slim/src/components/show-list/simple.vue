@@ -69,6 +69,10 @@
                     <img :src="`images/${props.row.config && !props.row.config.paused && props.row.status === 'Continuing' ? 'yes' : 'no'}16.png`" :alt="props.row.config && !props.row.config.paused && props.row.status === 'Continuing' ? 'yes' : 'no'" width="16" height="16">
                 </span>
 
+                <span v-else-if="props.column.label === 'Paused'" class="align-center">
+                    <img :src="`images/${props.row.config && props.row.config.paused ? 'yes' : 'no'}16.png`" :alt="props.row.config && props.row.config.paused ? 'yes' : 'no'" width="16" height="16">
+                </span>
+
                 <span v-else-if="props.column.label === 'Xem'" class="align-center">
                     <img :src="`images/${props.row.xemNumbering && props.row.xemNumbering.length !== 0 ? 'yes' : 'no'}16.png`" :alt="props.row.xemNumbering && props.row.xemNumbering.length !== 0 ? 'yes' : 'no'" width="16" height="16">
                 </span>
