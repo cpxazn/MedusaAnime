@@ -102,6 +102,10 @@ jobs:
           tag="sync-${date_tag}-${short_sha}-${GITHUB_RUN_NUMBER}"
           feature_head="$(git rev-parse HEAD)"
 
+          # Ensure the tagged commit contains the workflow files needed by downstream automation.
+          git cat-file -e "${feature_head}:.github/workflows/sync-upstream.yml"
+          git cat-file -e "${feature_head}:.github/workflows/docker-release.yml"
+
           git tag "${tag}" "${feature_head}"
           git push origin "${tag}"
 
