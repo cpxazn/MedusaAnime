@@ -221,6 +221,10 @@
                                         <p>Create and order different categories for your shows.</p>
                                     </config-template>
 
+                                    <config-toggle-slider v-model="layout.showActiveOnly" label="Show only active shows" id="show_active_only">
+                                        <p>hide shows that are paused or ended on the home page</p>
+                                    </config-toggle-slider>
+
                                     <config-toggle-slider v-model="layout.splitHomeInTabs" label="Split home in tabs" id="split_home_in_tabs">
                                         <span class="component-desc">Use tabs when splitting show lists</span>
                                     </config-toggle-slider>
@@ -451,6 +455,10 @@
 
                                     <config-toggle-slider v-if="general.developer" v-model="general.logs.dbDebug" label="Enable DB debug" id="dbdebug">
                                         <p>Enable DB debug logs</p>
+                                    </config-toggle-slider>
+
+                                    <config-toggle-slider v-model="general.logs.apiTiming" label="Log API timings" id="api_timing">
+                                        <p>Log timing for API requests to help identify slow endpoints</p>
                                     </config-toggle-slider>
 
                                     <config-toggle-slider v-model="general.logs.subliminalLog" label="Subliminal logs" id="subliminal_log">
@@ -910,6 +918,7 @@ export default {
                     ...{ logs: {
                         debug: general.logs.debug,
                         dbDebug: general.logs.dbDebug,
+                        apiTiming: general.logs.apiTiming,
                         actualLogDir: general.logs.actualLogDir,
                         nr: general.logs.nr,
                         size: general.logs.size,

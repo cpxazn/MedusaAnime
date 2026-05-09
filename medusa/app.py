@@ -173,6 +173,7 @@ class MedusaApp(object):
 
         self.WEB_PORT = None
         self.WEB_LOG = None
+        self.WEB_API_TIMING = False
         self.WEB_ROOT = None
         self.WEB_USERNAME = None
         self.WEB_PASSWORD = None
@@ -227,6 +228,7 @@ class MedusaApp(object):
         self.SEEDERS_LEECHERS_IN_NOTIFY = True
         self.SHOW_LIST_ORDER = ['Anime', 'Series']
         self.SHOW_USE_PAGINATION = True
+        self.SHOW_ACTIVE_ONLY = False
 
         self.USE_LISTVIEW = False
         self.METADATA_KODI = []

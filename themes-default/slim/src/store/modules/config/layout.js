@@ -34,6 +34,7 @@ const state = {
     trimZero: null,
     sortArticle: null,
     fuzzyDating: null,
+    showActiveOnly: null,
     comingEps: {
         missedRange: null,
         sort: null,

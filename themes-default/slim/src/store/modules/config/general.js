@@ -9,9 +9,10 @@ const state = {
     sourceUrl: null,
     rootDirs: [],
     brokenProviders: [],
-    logs: {
+      logs: {
         debug: null,
         dbDebug: null,
+        apiTiming: null,
         loggingLevels: {},
         numErrors: null,
         numWarnings: null,
