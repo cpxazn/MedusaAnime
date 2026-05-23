@@ -636,6 +636,29 @@ class GenericProvider(object):
 
         search_string['Episode'].append(episode_string.strip())
 
+    def _create_anime_season_search_string(self, show_scene_name, episode, search_string, add_string=None):
+        """Create a season/episode fallback search string for multi-season anime releases."""
+        if episode.series.is_scene and episode.scene_episode:
+            season_number = episode.scene_season
+            episode_number = episode.scene_episode
+        else:
+            season_number = episode.season
+            episode_number = episode.episode
+
+        if season_number in (None, 0, 1) or episode_number in (None, 0):
+            return
+
+        episode_string = show_scene_name + self.search_separator
+        episode_string += config.naming_ep_type[2] % {
+            'seasonnumber': season_number,
+            'episodenumber': episode_number
+        }
+
+        if add_string:
+            episode_string += self.search_separator + add_string
+
+        search_string['Episode'].append(episode_string.strip())
+
     def _create_default_search_string(self, show_scene_name, episode, search_string, add_string=None):
         """Create a default search string, used for standard type S01E01 tv series."""
         episode_string = show_scene_name + self.search_separator
@@ -695,8 +718,15 @@ class GenericProvider(object):
                 self._create_sports_search_string(show_name, episode, search_string, add_string=add_string)
             elif episode.series.anime:
                 self._create_anime_search_string(show_name, episode, search_string, add_string=add_string)
+                if self.supports_absolute_numbering:
+                    self._create_anime_season_search_string(
+                        show_name, episode, search_string, add_string=add_string
+                    )
             else:
                 self._create_default_search_string(show_name, episode, search_string, add_string=add_string)
+
+        # Preserve order while dropping duplicate queries from overlapping aliases/templates.
+        search_string['Episode'] = list(dict.fromkeys(search_string['Episode']))
 
         return [search_string]
 
