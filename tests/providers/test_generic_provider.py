@@ -398,3 +398,32 @@ def test_create_search_string_anime(p, create_tvshow, create_tvepisode, monkeypa
     actual = search_string['Episode']
 
     assert expected == actual
+
+
+def test_get_episode_search_strings_anime_includes_season_fallback(create_tvshow, create_tvepisode,
+                                                                   monkeypatch_function_return):
+    monkeypatch_function_return([
+        ('medusa.scene_exceptions.get_scene_exceptions', {ExceptionTitle('Mairimashita! Iruma-kun')}),
+        ('medusa.scene_exceptions.get_season_scene_exceptions', set()),
+    ])
+
+    mock_series = create_tvshow(indexer=1, name='Welcome to Demon School! Iruma-kun', anime=1)
+    provider = GenericProvider('mock_provider')
+    provider.series = mock_series
+    provider.supports_absolute_numbering = True
+    provider.search_separator = '+'
+
+    episode = create_tvepisode(mock_series, 4, 7)
+    episode.absolute_number = 7
+    episode.scene_season = 4
+    episode.scene_episode = 7
+
+    actual = provider._get_episode_search_strings(episode)
+
+    assert len(actual) == 1
+    assert set(actual[0]['Episode']) == {
+        u'Welcome to Demon School! Iruma-kun+07',
+        u'Welcome to Demon School! Iruma-kun+S04E07',
+        u'Mairimashita! Iruma-kun+07',
+        u'Mairimashita! Iruma-kun+S04E07'
+    }

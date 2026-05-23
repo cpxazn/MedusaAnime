@@ -1,0 +1,4 @@
+[DEFAULT]
+loggedin = no
+sessionkey =
+lastcommandtime = 0
