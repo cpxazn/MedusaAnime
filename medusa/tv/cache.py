@@ -287,7 +287,10 @@ class Cache(object):
             for search_result in manual_data:
                 log.debug('Adding to cache item found in manual search: {0}',
                           search_result.name)
-                result = self.add_cache_entry(search_result)
+                result = self.add_cache_entry(
+                    search_result,
+                    parsed_result=getattr(search_result, 'parsed_result', None)
+                )
                 if result is not None:
                     results.append(result)
         except Exception as error:
