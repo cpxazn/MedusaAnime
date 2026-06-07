@@ -44,6 +44,57 @@
                         >
                     </v-tab>
 
+                    <v-tab key="myanimelist" title="MyAnimeList">
+                        <div class="row component-group">
+                            <div class="component-group-desc col-xs-12 col-md-2">
+                                <span class="icon-notifiers-anime" title="MyAnimeList" />
+                                <h3>
+                                    <app-link href="https://myanimelist.net/apiconfig">MyAnimeList</app-link>
+                                </h3>
+                                <p>Configure the official MyAnimeList API used by anime discovery.</p>
+                            </div>
+                            <div class="col-xs-12 col-md-10">
+                                <fieldset class="component-group-list">
+                                    <config-toggle-slider v-model="anime.mal.enabled" label="Use MyAnimeList API" id="use_mal_api">
+                                        <span>Use the authenticated official MyAnimeList API when possible. Medusa can fall back to page scraping when this is disabled or not connected.</span>
+                                    </config-toggle-slider>
+
+                                    <config-textbox v-model="anime.mal.clientId" label="Client ID" id="mal_client_id">
+                                        <span>Client ID from your MyAnimeList API application.</span>
+                                    </config-textbox>
+
+                                    <config-textbox v-model="anime.mal.clientSecret" type="password" label="Client Secret" id="mal_client_secret">
+                                        <span>Optional for PKCE clients. Stored encrypted in config.ini.</span>
+                                    </config-textbox>
+
+                                    <config-template label-for="mal_oauth_status" label="Connection">
+                                        <p>
+                                            Status:
+                                            <strong v-if="malAuth.connected">Connected</strong>
+                                            <strong v-else>Not connected</strong>
+                                        </p>
+                                        <p v-if="malAuth.callbackUrl">Callback URL for your MAL app: <code>{{ malAuth.callbackUrl }}</code></p>
+                                        <button
+                                            type="button"
+                                            class="btn-medusa btn-inline"
+                                            :disabled="saving || malAuth.loading || !anime.mal.clientId"
+                                            @click.prevent="connectMyAnimeList"
+                                        >
+                                            Save and Connect MyAnimeList
+                                        </button>
+                                        <p v-if="!anime.mal.clientId">Enter and save a Client ID before connecting.</p>
+                                    </config-template>
+                                </fieldset><!-- .component-group-list //-->
+                            </div>
+                        </div>
+                        <br>
+                        <input type="submit"
+                               class="btn-medusa config_submitter"
+                               value="Save Changes"
+                               :disabled="saving"
+                        >
+                    </v-tab>
+
                     <v-tab key="look_and_feel" title="Look &amp; Feel">
                         <div class="row component-group">
                             <div class="component-group-desc col-xs-12 col-md-2">
@@ -116,14 +167,61 @@ export default {
     },
     data() {
         return {
-            saving: false
+            saving: false,
+            malAuth: {
+                loading: false,
+                connected: false,
+                callbackUrl: ''
+            }
         };
+    },
+    mounted() {
+        this.refreshMalAuthStatus();
+        this.handleMalAuthReturn();
     },
     methods: {
         ...mapActions([
             'setConfig',
             'updateShowlistDefault'
         ]),
+        async refreshMalAuthStatus() {
+            this.malAuth.loading = true;
+
+            try {
+                const { data } = await this.client.api.get('auth/myanimelist/status');
+                this.malAuth = {
+                    loading: false,
+                    connected: Boolean(data && data.connected),
+                    callbackUrl: data && data.callbackUrl ? data.callbackUrl : ''
+                };
+                this.anime.mal.connected = this.malAuth.connected;
+            } catch (error) {
+                this.malAuth = {
+                    loading: false,
+                    connected: false,
+                    callbackUrl: ''
+                };
+                this.anime.mal.connected = false;
+            }
+        },
+        async connectMyAnimeList() {
+            await this.save(false);
+            const next = encodeURIComponent(this.$route.fullPath || '/config/anime');
+            const webRoot = this.client && this.client.webRoot ? this.client.webRoot : '';
+            window.location.assign(`${webRoot}/api/v2/auth/myanimelist/start?next=${next}`);
+        },
+        handleMalAuthReturn() {
+            const query = this.$route.query || {};
+            if (query.malAuth !== 'success') {
+                return;
+            }
+
+            this.$snotify.success('MyAnimeList has been connected successfully.', 'Connected');
+            const nextQuery = { ...query };
+            delete nextQuery.malAuth;
+            this.$router.replace({ query: nextQuery }).catch(() => {});
+            this.refreshMalAuthStatus();
+        },
         addPreferredReleaseGroup(newTag) {
             const value = (newTag || '').trim();
             if (!value) {
@@ -137,25 +235,34 @@ export default {
                 this.anime.preferredReleaseGroups = [...this.anime.preferredReleaseGroups, value];
             }
         },
-        async save() {
+        async save(notify = true) {
             const { anime, setConfig } = this;
+            const configAnime = {
+                ...anime,
+                mal: { ...anime.mal }
+            };
+            delete configAnime.mal.connected;
 
             // Disable the save button until we're done.
             this.saving = true;
             const section = 'main';
 
             try {
-                await setConfig({ section, config: { anime } });
-                this.$snotify.success(
-                    'Saved Anime config',
-                    'Saved',
-                    { timeout: 5000 }
-                );
+                await setConfig({ section, config: { anime: configAnime } });
+                await this.refreshMalAuthStatus();
+                if (notify) {
+                    this.$snotify.success(
+                        'Saved Anime config',
+                        'Saved',
+                        { timeout: 5000 }
+                    );
+                }
             } catch (error) {
                 this.$snotify.error(
                     'Error while trying to save anime config',
                     'Error'
                 );
+                throw error;
             } finally {
                 this.saving = false;
             }
@@ -164,6 +271,7 @@ export default {
     computed: {
         ...mapState({
             anime: state => state.config.anime,
+            client: state => state.auth.client,
             layout: state => state.config.layout
         }),
         animeShowlistDefaultAnime: {
