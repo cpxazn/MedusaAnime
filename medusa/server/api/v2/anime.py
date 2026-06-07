@@ -214,6 +214,9 @@ class AnimeHandler(BaseRequestHandler):
         release_groups = data.get('release_groups', [])
         whitelist = data.get('whitelist', [])
         blacklist = data.get('blacklist', [])
+        initial_release_group = data.get('initial_release_group')
+        fallback_release_groups = data.get('fallback_release_groups')
+        release_group_fallback_days = self._parse(data.get('release_group_fallback_days'), int)
 
         if not anime_id:
             return self._bad_request('anime_id is required')
@@ -276,8 +279,21 @@ class AnimeHandler(BaseRequestHandler):
             'whitelist': whitelist or (whitelist if whitelist else None),
         }
 
-        if release_groups:
-            options['whitelist'] = release_groups
+        if release_group_fallback_days is None:
+            release_group_fallback_days = 3
+
+        preferred_groups = fallback_release_groups or release_groups or whitelist or list(app.PREFERRED_ANIME_RELEASE_GROUPS) or ['SubsPlease']
+        preferred_groups = [group for group in preferred_groups if group]
+
+        active_group = initial_release_group or (preferred_groups[0] if preferred_groups else None)
+        if active_group:
+            preferred_groups = [group for group in preferred_groups if group.lower() != active_group.lower()]
+            preferred_groups.insert(0, active_group)
+            options['whitelist'] = [active_group]
+
+        options['anime_release_group_fallback_groups'] = preferred_groups
+        options['anime_release_group_fallback_days'] = release_group_fallback_days
+        options['anime_release_group_last_switch'] = None
 
         try:
             from medusa.indexers.utils import slug_to_indexer_id

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from medusa import app
 from medusa.clients.anime import AnimeSeries
 from medusa.server.api.v2.anime import AnimeHandler
 
@@ -334,6 +335,82 @@ async def test_add_anime_no_indexer_id(http_client, create_url):
     assert response.code == 400
     data = json.loads(response.body)
     assert 'indexer' in data['error'].lower()
+
+
+@pytest.mark.gen_test
+async def test_add_anime_defaults_single_release_group_fallback(http_client, create_url):
+    anime = _make_anime(anime_id=1, title_english='Naruto', anidb_id=12345)
+    mock_client = MagicMock()
+    mock_client.get_details.return_value = anime
+    queue_item = MagicMock()
+    queue_item.to_json = {'ok': True}
+
+    original_groups = list(app.PREFERRED_ANIME_RELEASE_GROUPS)
+    app.PREFERRED_ANIME_RELEASE_GROUPS = []
+    scheduler = MagicMock()
+    scheduler.action.addShow.return_value = queue_item
+
+    with patch.object(AnimeHandler, '_get_client', return_value=mock_client):
+        with patch('medusa.server.api.v2.anime.match_anime_to_show', return_value=None):
+            with patch('medusa.server.api.v2.anime.cached_aid_to_tvdb', return_value=None):
+                with patch('medusa.indexers.utils.slug_to_indexer_id', return_value=666):
+                    with patch.object(app, 'show_queue_scheduler', scheduler):
+                        url = create_url('/anime/add')
+                        body = json.dumps({'anime_id': 1, 'source': 'livechart', 'root_dir': '/anime'})
+                        response = await http_client.fetch(
+                            url,
+                            method='POST',
+                            body=body,
+                            headers={'Content-Type': 'application/json'},
+                            raise_error=False,
+                        )
+
+    app.PREFERRED_ANIME_RELEASE_GROUPS = original_groups
+
+    assert response.code == 201
+    _, kwargs = scheduler.action.addShow.call_args
+    assert kwargs['whitelist'] == ['SubsPlease']
+    assert kwargs['anime_release_group_fallback_groups'] == ['SubsPlease']
+    assert kwargs['anime_release_group_fallback_days'] == 3
+
+
+@pytest.mark.gen_test
+async def test_add_anime_respects_initial_and_fallback_release_groups(http_client, create_url):
+    anime = _make_anime(anime_id=1, title_english='Naruto', anidb_id=12345)
+    mock_client = MagicMock()
+    mock_client.get_details.return_value = anime
+    queue_item = MagicMock()
+    queue_item.to_json = {'ok': True}
+    scheduler = MagicMock()
+    scheduler.action.addShow.return_value = queue_item
+
+    with patch.object(AnimeHandler, '_get_client', return_value=mock_client):
+        with patch('medusa.server.api.v2.anime.match_anime_to_show', return_value=None):
+            with patch('medusa.server.api.v2.anime.cached_aid_to_tvdb', return_value=None):
+                with patch('medusa.indexers.utils.slug_to_indexer_id', return_value=666):
+                    with patch.object(app, 'show_queue_scheduler', scheduler):
+                        url = create_url('/anime/add')
+                        body = json.dumps({
+                            'anime_id': 1,
+                            'source': 'livechart',
+                            'root_dir': '/anime',
+                            'initial_release_group': 'SubsPlease',
+                            'fallback_release_groups': ['Erai-raws', 'SubsPlease', 'Judas'],
+                            'release_group_fallback_days': 5,
+                        })
+                        response = await http_client.fetch(
+                            url,
+                            method='POST',
+                            body=body,
+                            headers={'Content-Type': 'application/json'},
+                            raise_error=False,
+                        )
+
+    assert response.code == 201
+    _, kwargs = scheduler.action.addShow.call_args
+    assert kwargs['whitelist'] == ['SubsPlease']
+    assert kwargs['anime_release_group_fallback_groups'] == ['SubsPlease', 'Erai-raws', 'Judas']
+    assert kwargs['anime_release_group_fallback_days'] == 5
 
 
 # ---------------------------------------------------------------------------

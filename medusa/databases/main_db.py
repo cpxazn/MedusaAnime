@@ -1037,3 +1037,26 @@ class AddSearchTemplates(AddHistoryFDHFields):
             self.addColumn('tv_shows', 'templates', 'NUMERIC', 0)
 
         self.inc_minor_version()
+
+
+class AddAnimeReleaseGroupFallback(AddSearchTemplates):
+    """Add deterministic anime release-group fallback fields to tv_shows."""
+
+    def test(self):
+        """Test if the version is at least 44.20."""
+        return self.connection.version >= (44, 20)
+
+    def execute(self):
+        utils.backup_database(self.connection.path, self.connection.version)
+
+        log.info(u'Adding anime release-group fallback fields to tv_shows')
+        if not self.hasColumn('tv_shows', 'anime_release_group_fallback_groups'):
+            self.addColumn('tv_shows', 'anime_release_group_fallback_groups', 'TEXT', '[]')
+
+        if not self.hasColumn('tv_shows', 'anime_release_group_fallback_days'):
+            self.addColumn('tv_shows', 'anime_release_group_fallback_days', 'NUMERIC', 0)
+
+        if not self.hasColumn('tv_shows', 'anime_release_group_last_switch'):
+            self.addColumn('tv_shows', 'anime_release_group_last_switch', 'TEXT', None)
+
+        self.inc_minor_version()

@@ -110,6 +110,10 @@ class SeriesHandler(BaseRequestHandler):
                 'paused': data_options.get('paused'),
                 'blacklist': data_options['release'].get('blacklist', []) if data_options.get('release') else None,
                 'whitelist': data_options['release'].get('whitelist', []) if data_options.get('release') else None,
+                'anime_release_group_fallback_groups': data_options['release'].get('fallbackGroups')
+                if data_options.get('release') else None,
+                'anime_release_group_fallback_days': data_options['release'].get('fallbackDays')
+                if data_options.get('release') else None,
                 'default_status_after': None,
                 'root_dir': data_options.get('rootDir'),
                 'show_lists': data_options.get('showLists')
@@ -159,6 +163,8 @@ class SeriesHandler(BaseRequestHandler):
             'config.release.ignoredWords': ListField(series, 'release_ignored_words'),
             'config.release.blacklist': ListField(series, 'blacklist'),
             'config.release.whitelist': ListField(series, 'whitelist'),
+            'config.release.fallbackGroups': ListField(series, 'anime_release_group_fallback_groups'),
+            'config.release.fallbackDays': IntegerField(series, 'anime_release_group_fallback_days'),
             'config.release.requiredWordsExclude': BooleanField(series, 'release_required_exclude'),
             'config.release.ignoredWordsExclude': BooleanField(series, 'release_ignored_exclude'),
             'language': StringField(series, 'lang'),
