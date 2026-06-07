@@ -115,6 +115,8 @@ class MyAnimeListAuthHandler(BaseRequestHandler):
         self._clear_pending_oauth()
 
         if next_path:
+            if next_path != '/' and next_path.endswith('/'):
+                next_path = next_path.rstrip('/')
             separator = '&' if '?' in next_path else '?'
             return self._redirect_html(
                 '{path}{separator}malAuth=success'.format(path=next_path, separator=separator),
