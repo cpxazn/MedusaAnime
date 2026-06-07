@@ -41,6 +41,7 @@ class AnimeSeries:
     episode_info: Optional[str] = None  # Raw display text, e.g. "12 eps × 24m"
     score: Optional[float] = None
     rating: Optional[float] = None
+    num_list_users: Optional[int] = None
     genres: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
     studios: List[str] = field(default_factory=list)
