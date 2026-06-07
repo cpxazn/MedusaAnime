@@ -12,6 +12,23 @@
                     </select>
                 </config-template>
 
+                <div v-if="selectedSource === 'myanimelist'" class="anime-auth-status">
+                    <div class="anime-auth-copy">
+                        <strong>MyAnimeList API:</strong>
+                        <span v-if="malAuth.loading">Checking connection...</span>
+                        <span v-else-if="malAuth.connected">Connected</span>
+                        <span v-else-if="malAuth.clientIdConfigured">Not connected</span>
+                        <span v-else>Client ID not configured</span>
+                    </div>
+                    <button
+                        class="btn-medusa btn-inline"
+                        :disabled="malAuth.loading || !malAuth.clientIdConfigured"
+                        @click="connectMyAnimeList"
+                    >
+                        {{ malAuth.connected ? 'Reconnect MAL' : 'Connect MAL' }}
+                    </button>
+                </div>
+
                 <config-template label-for="anime-year" label="Year">
                     <select id="anime-year" v-model.number="selectedYear" class="form-control max-input350" @change="loadAnime">
                         <option v-for="year in yearOptions" :key="year" :value="year">
@@ -24,6 +41,14 @@
                     <select id="anime-season" v-model="selectedSeason" class="form-control max-input350" @change="loadAnime">
                         <option v-for="season in seasonOptions" :key="season.value" :value="season.value">
                             {{ season.text }}
+                        </option>
+                    </select>
+                </config-template>
+
+                <config-template v-if="selectedSource === 'myanimelist'" label-for="anime-sort" label="Sort">
+                    <select id="anime-sort" v-model="selectedSeasonalSort" class="form-control max-input350" @change="loadAnime">
+                        <option v-for="option in seasonalSortOptions" :key="option.value" :value="option.value">
+                            {{ option.text }}
                         </option>
                     </select>
                 </config-template>
@@ -128,9 +153,7 @@
                                 {{ formatUpcoming(anime) }}
                             </div>
 
-                            <p
-                                class="anime-card-synopsis"
-                            >
+                            <p class="anime-card-synopsis">
                                 {{ anime.synopsis || 'No synopsis available.' }}
                             </p>
 
@@ -165,19 +188,29 @@ export default {
         const thisYear = new Date().getFullYear();
 
         return {
-            selectedSource: 'livechart',
+            selectedSource: 'myanimelist',
             selectedYear: current.year,
             selectedSeason: current.season,
+            selectedSeasonalSort: 'anime_num_list_users',
             selectedType: 'TV',
             searchQuery: '',
             searchScope: 'global',
             animeList: [],
             loading: false,
+            malAuth: {
+                loading: false,
+                connected: false,
+                clientIdConfigured: false
+            },
             sourceOptions: [
-                { text: 'LiveChart', value: 'livechart' },
-                { text: 'MyAnimeList', value: 'myanimelist' }
+                { text: 'MyAnimeList', value: 'myanimelist' },
+                { text: 'LiveChart', value: 'livechart' }
             ],
             seasonOptions: SEASONS.map(season => ({ text: season, value: season })),
+            seasonalSortOptions: [
+                { text: 'Most Members', value: 'anime_num_list_users' },
+                { text: 'Highest Score', value: 'anime_score' }
+            ],
             typeOptions: [
                 { text: 'TV (default)', value: 'TV' },
                 { text: 'All Types', value: 'ALL' },
@@ -215,9 +248,46 @@ export default {
         }
     },
     mounted() {
+        this.refreshMalAuthStatus();
+        this.handleMalAuthReturn();
         this.loadAnime();
     },
     methods: {
+        async refreshMalAuthStatus() {
+            this.malAuth.loading = true;
+
+            try {
+                const { data } = await this.client.api.get('auth/myanimelist/status');
+                this.malAuth = {
+                    loading: false,
+                    connected: Boolean(data && data.connected),
+                    clientIdConfigured: Boolean(data && data.clientIdConfigured)
+                };
+            } catch (error) {
+                this.malAuth = {
+                    loading: false,
+                    connected: false,
+                    clientIdConfigured: false
+                };
+            }
+        },
+        connectMyAnimeList() {
+            const next = encodeURIComponent(this.$route.fullPath || '/add-anime');
+            const webRoot = this.client && this.client.webRoot ? this.client.webRoot : '';
+            window.location.assign(`${webRoot}/api/v2/auth/myanimelist/start?next=${next}`);
+        },
+        handleMalAuthReturn() {
+            const query = this.$route.query || {};
+            if (query.malAuth !== 'success') {
+                return;
+            }
+
+            this.$snotify.success('MyAnimeList has been connected successfully.', 'Connected');
+            const nextQuery = { ...query };
+            delete nextQuery.malAuth;
+            this.$router.replace({ query: nextQuery }).catch(() => {});
+            this.refreshMalAuthStatus();
+        },
         executeSearch() {
             this.loadAnime();
         },
@@ -250,6 +320,10 @@ export default {
                     season: this.selectedSeason,
                     limit: 200
                 };
+
+                if (this.selectedSource === 'myanimelist') {
+                    params.sourceSort = this.selectedSeasonalSort;
+                }
 
                 let response;
                 if (this.searchQuery && this.searchScope === 'global') {
@@ -299,7 +373,7 @@ export default {
 
             const ep = anime.episodes ? `${anime.episodes} eps` : '? eps';
             const mins = anime.episodeDurationMinutes ? `${anime.episodeDurationMinutes}m` : '?m';
-            return `${ep} × ${mins}`;
+            return `${ep} x ${mins}`;
         },
         formatUpcoming(anime) {
             const parts = [];
@@ -314,7 +388,7 @@ export default {
                 parts.push(`(${anime.nextEpisodeCountdown})`);
             }
 
-            return parts.join(' • ') || 'N/A';
+            return parts.join(' | ') || 'N/A';
         },
         formatSeasonYear(anime) {
             if (anime.season || anime.year) {
@@ -379,14 +453,12 @@ export default {
 
             let cleaned = String(title).trim();
 
-            // Strip explicit sequel markers that can hurt indexer matching.
             cleaned = cleaned
                 .replace(/\s+season\s+\d+\s*$/i, '')
                 .replace(/\s+cour\s+\d+\s*$/i, '')
                 .replace(/\s+part\s+\d+\s*$/i, '')
                 .replace(/\s+pt\.?\s*\d+\s*$/i, '');
 
-            // Strip trailing sequel numbers, including attached numbers like "Rotten2".
             cleaned = cleaned
                 .replace(/([A-Za-z])\d+\s*$/, '$1')
                 .replace(/\s+\d+\s*$/, '');
@@ -440,7 +512,6 @@ export default {
                 // Best-effort enrichment only.
             }
 
-            // LiveChart can miss AniDB cross refs; fall back via MAL lookup by title.
             if (!enriched.anidbId && this.selectedSource === 'livechart') {
                 const query = this.getPrimaryTitle(enriched) || this.getPrimaryTitle(anime);
                 if (query) {
@@ -495,24 +566,19 @@ export default {
 
             return enriched;
         },
-        openAddNewShow(anime) {
-            // Use the list-item data directly — no blocking enrichment fetch needed.
-            // Titles come from the seasonal list (data-romaji attr, etc.), which are already
-            // correct after the server-side JSON-LD fix. The anidbId may be null here, but
-            // fetch_releasegroups on the backend has a MAL-based fallback for that case.
-            const animeTitle = this.getPrimaryTitle(anime);
-            const indexerQueryTitle = this.getIndexerQueryTitle(anime);
-            const romanjiTitle = this.stripSeasonSuffix(anime.titleRomanji || '');
+        async openAddNewShow(anime) {
+            const enrichedAnime = await this.enrichAnimeMetadata(anime);
+            const animeTitle = this.getPrimaryTitle(enrichedAnime);
+            const indexerQueryTitle = this.getIndexerQueryTitle(enrichedAnime);
+            const romanjiTitle = this.stripSeasonSuffix(enrichedAnime.titleRomanji || '');
             const animeRootDir = this.resolveAnimeRootDir();
-            const showDir = this.joinPath(animeRootDir, anime.directoryName || animeTitle);
+            const showDir = this.joinPath(animeRootDir, enrichedAnime.directoryName || animeTitle);
 
             const providedInfo = {
-                // Prefill mode only: still require selecting an indexer result in step 1.
-                // Using `use: true` without a valid showId/indexerId hides search and breaks add.
                 use: false,
                 showName: indexerQueryTitle,
                 releaseGroupRomanji: romanjiTitle,
-                releaseGroupAnidbId: anime.anidbId || null,
+                releaseGroupAnidbId: enrichedAnime.anidbId || null,
                 indexerId: 0,
                 indexerLanguage: this.general.indexerDefaultLanguage,
                 showDir,
@@ -558,6 +624,20 @@ export default {
 
 .controls-column-search {
     padding-top: 2px;
+}
+
+.anime-auth-status {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 4px 0 14px;
+}
+
+.anime-auth-copy {
+    color: #555;
+    font-size: 12px;
+    line-height: 1.4;
 }
 
 .anime-controls-inline {

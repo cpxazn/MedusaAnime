@@ -126,12 +126,13 @@ class AnimeSource(ABC):
         pass
     
     @abstractmethod
-    def get_seasonal(self, year: int, season: str) -> List[AnimeSeries]:
+    def get_seasonal(self, year: int, season: str, source_sort: Optional[str] = None) -> List[AnimeSeries]:
         """Get seasonal anime for a given year/season.
         
         Args:
             year: Year (e.g., 2026)
             season: Season (SPRING, SUMMER, FALL, WINTER)
+            source_sort: Optional source-specific sort key
             
         Returns:
             List of AnimeSeries for the season
@@ -161,4 +162,3 @@ class AnimeSource(ABC):
             List of upcoming AnimeSeries objects
         """
         pass
-

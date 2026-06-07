@@ -365,6 +365,9 @@ class BaseRequestHandler(RequestHandler):
                         # For airDate use datetime.min string; for numeric/other fields use a low sentinel
                         if field == 'airDate':
                             return text_type(datetime.min)
+                        if field in ('score', 'rating', 'year', 'episodes', 'episodeDurationMinutes',
+                                     'nextEpisodeNumber', 'popularity', 'rank'):
+                            return float('-inf')
                         return ''
                     return value
 

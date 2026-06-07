@@ -90,16 +90,45 @@
                                     <p>For example as Show.265 rather than Show.S02E03</p>
                                 </config-toggle-slider>
 
-                                <config-template v-if="show.config.anime" label-for="anidbReleaseGroup" label="Release Groups">
-                                    <anidb-release-group-ui
-                                        v-if="show.name"
-                                        class="max-width"
-                                        :show-name="show.name"
-                                        :blacklist="show.config.release.blacklist"
-                                        :whitelist="show.config.release.whitelist"
-                                        @change="onChangeReleaseGroupsAnime"
-                                    />
-                                </config-template>
+                                <template v-if="show.config.anime">
+                                    <config-template label-for="anidbReleaseGroup" label="Release Groups">
+                                        <anidb-release-group-ui
+                                            v-if="show.name"
+                                            class="max-width"
+                                            :show-name="show.name"
+                                            :blacklist="show.config.release.blacklist"
+                                            :whitelist="show.config.release.whitelist"
+                                            @change="onChangeReleaseGroupsAnime"
+                                        />
+                                    </config-template>
+
+                                    <config-template label-for="animeFallbackReleaseGroups" label="Fallback Release Groups">
+                                        <multiselect
+                                            v-model="animeFallbackGroups"
+                                            :multiple="true"
+                                            :taggable="true"
+                                            :close-on-select="false"
+                                            :clear-on-select="false"
+                                            :preserve-search="true"
+                                            :options="animeFallbackReleaseGroupOptions"
+                                            @tag="addAnimeFallbackReleaseGroup"
+                                            class="max-input350"
+                                        />
+                                        <span>Groups are tried top-to-bottom. When wanted episodes remain missing past the fallback delay, Medusa switches the active whitelist to the next group.</span>
+                                        <p v-if="show.config.release.activeGroup">Current active group: <strong>{{ show.config.release.activeGroup }}</strong></p>
+                                        <p v-if="show.config.release.lastSwitch">Last fallback switch: {{ show.config.release.lastSwitch }}</p>
+                                    </config-template>
+
+                                    <config-textbox-number
+                                        v-model="animeFallbackDays"
+                                        :min="0"
+                                        :step="1"
+                                        label="Fallback Delay"
+                                        id="anime_fallback_days"
+                                    >
+                                        <span>Days to wait before switching to the next fallback release group. Set to 0 to disable fallback rotation.</span>
+                                    </config-textbox-number>
+                                </template>
 
                                 <config-toggle-slider :value="show.config.sports" @input="changeFormat($event, 'sports')" label="Sports" id="sports">
                                     <span>enable if the show is a sporting or MMA event released as Show.03.02.2010 rather than Show.S02E03</span>
@@ -340,6 +369,43 @@ export default {
             const { allowed, preferred } = this.show.config.qualities;
             return combineQualities(allowed, preferred);
         },
+        animeFallbackGroups: {
+            get() {
+                const release = this.show.config.release || {};
+                return Array.isArray(release.fallbackGroups) ? release.fallbackGroups : [];
+            },
+            set(value) {
+                this.show.config.release.fallbackGroups = value || [];
+            }
+        },
+        animeFallbackDays: {
+            get() {
+                const release = this.show.config.release || {};
+                return Number(release.fallbackDays || 0);
+            },
+            set(value) {
+                this.show.config.release.fallbackDays = Number(value || 0);
+            }
+        },
+        animeFallbackReleaseGroupOptions() {
+            const release = this.show.config.release || {};
+            const groups = [];
+
+            [
+                this.anime.preferredReleaseGroups,
+                release.whitelist,
+                release.fallbackGroups
+            ].forEach(source => {
+                if (Array.isArray(source)) {
+                    groups.push(...source);
+                }
+            });
+
+            return groups.filter((group, index, array) => {
+                const normalizedGroup = String(group || '').trim().toLowerCase();
+                return normalizedGroup && array.findIndex(item => String(item || '').trim().toLowerCase() === normalizedGroup) === index;
+            });
+        },
         saveButton() {
             return this.saving === false ? 'Save Changes' : 'Saving...';
         },
@@ -438,6 +504,19 @@ export default {
         onChangeReleaseGroupsAnime(groupNames) {
             this.show.config.release.whitelist = groupNames.whitelist;
             this.show.config.release.blacklist = groupNames.blacklist;
+        },
+        addAnimeFallbackReleaseGroup(newTag) {
+            const value = String(newTag || '').trim();
+            if (!value) {
+                return;
+            }
+
+            const exists = this.animeFallbackGroups
+                .some(group => String(group || '').trim().toLowerCase() === value.toLowerCase());
+
+            if (!exists) {
+                this.animeFallbackGroups = [...this.animeFallbackGroups, value];
+            }
         },
         updateLanguage(value) {
             this.show.language = value;
