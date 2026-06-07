@@ -2,17 +2,65 @@
 """Tests for medusa/search/core.py."""
 from __future__ import unicode_literals
 
+import datetime
 import functools
 import logging
+from unittest.mock import patch
 
 from medusa.common import HD1080p, Quality
-from medusa.search.core import filter_results, pick_result
+from medusa.search.core import filter_results, maybe_rotate_anime_release_group, pick_result
 
 from mock.mock import Mock
 
 import pytest
 
 from six import iteritems
+
+
+class _AnimeFallbackSeries(object):
+    def __init__(self, last_switch=None):
+        self.name = 'Test Anime'
+        self.is_anime = True
+        self.whitelist = ['SubsPlease']
+        self.anime_release_group_fallback_groups = ['SubsPlease', 'Erai-raws', 'Judas']
+        self.anime_release_group_fallback_days = 3
+        self.anime_release_group_last_switch = last_switch
+        self.save_to_db = Mock()
+
+    def to_json(self, detailed=False):
+        return {}
+
+
+class _EpisodeStub(object):
+    def __init__(self, airdate):
+        self.airdate = airdate
+
+
+def test_maybe_rotate_anime_release_group_switches_when_episode_is_overdue():
+    series = _AnimeFallbackSeries()
+    episodes = [_EpisodeStub(datetime.date.today() - datetime.timedelta(days=4))]
+
+    with patch('medusa.search.core.ws.Message') as message:
+        rotated = maybe_rotate_anime_release_group(series, episodes)
+
+    assert rotated is True
+    assert series.whitelist == ['Erai-raws']
+    assert series.anime_release_group_last_switch == datetime.date.today().isoformat()
+    series.save_to_db.assert_called_once_with()
+    message.return_value.push.assert_called_once_with()
+
+
+def test_maybe_rotate_anime_release_group_waits_before_switching_again():
+    series = _AnimeFallbackSeries(last_switch=datetime.date.today().isoformat())
+    episodes = [_EpisodeStub(datetime.date.today() - datetime.timedelta(days=10))]
+
+    with patch('medusa.search.core.ws.Message') as message:
+        rotated = maybe_rotate_anime_release_group(series, episodes)
+
+    assert rotated is False
+    assert series.whitelist == ['SubsPlease']
+    series.save_to_db.assert_not_called()
+    message.return_value.push.assert_not_called()
 
 
 @pytest.mark.parametrize('p', [

@@ -269,6 +269,9 @@ class Series(TV):
         self._show_lists = ''
         self._templates = None
         self._search_templates = None
+        self.anime_release_group_fallback_groups = []
+        self.anime_release_group_fallback_days = 0
+        self.anime_release_group_last_switch = None
 
         other_show = Show.find_by_id(app.showList, self.indexer, self.series_id)
         if other_show is not None:
@@ -1562,6 +1565,11 @@ class Series(TV):
             self.externals = load_externals_from_db(self.indexer, self.series_id)
 
             self.show_lists = sql_results[0]['show_lists'] or 'series'
+            self.anime_release_group_fallback_groups = json.loads(
+                sql_results[0]['anime_release_group_fallback_groups'] or '[]'
+            )
+            self.anime_release_group_fallback_days = int(sql_results[0]['anime_release_group_fallback_days'] or 0)
+            self.anime_release_group_last_switch = sql_results[0]['anime_release_group_last_switch']
 
             # Load search templates
             self.init_search_templates()
@@ -1823,6 +1831,12 @@ class Series(TV):
                 self.blacklist = options['blacklist']
             if options.get('whitelist'):
                 self.whitelist = options['whitelist']
+            if options.get('anime_release_group_fallback_groups') is not None:
+                self.anime_release_group_fallback_groups = options['anime_release_group_fallback_groups']
+            if options.get('anime_release_group_fallback_days') is not None:
+                self.anime_release_group_fallback_days = int(options['anime_release_group_fallback_days'] or 0)
+            if options.get('anime_release_group_last_switch') is not None:
+                self.anime_release_group_last_switch = options['anime_release_group_last_switch']
 
     def prev_episode(self):
         """Return the last aired episode air date.
@@ -2315,7 +2329,10 @@ class Series(TV):
                           'default_ep_status': self.default_ep_status,
                           'plot': self.plot,
                           'airdate_offset': self.airdate_offset,
-                          'show_lists': self._show_lists}
+                          'show_lists': self._show_lists,
+                          'anime_release_group_fallback_groups': json.dumps(self.anime_release_group_fallback_groups),
+                          'anime_release_group_fallback_days': self.anime_release_group_fallback_days,
+                          'anime_release_group_last_switch': self.anime_release_group_last_switch}
 
         main_db_con = db.DBConnection()
         main_db_con.upsert('tv_shows', new_value_dict, control_value_dict)
@@ -2446,6 +2463,10 @@ class Series(TV):
         if self.is_anime:
             data['config']['release']['blacklist'] = self.blacklist
             data['config']['release']['whitelist'] = self.whitelist
+            data['config']['release']['fallbackGroups'] = self.anime_release_group_fallback_groups
+            data['config']['release']['fallbackDays'] = self.anime_release_group_fallback_days
+            data['config']['release']['lastSwitch'] = self.anime_release_group_last_switch
+            data['config']['release']['activeGroup'] = self.whitelist[0] if self.whitelist else None
 
         # Make sure these are at least defined
         data['sceneAbsoluteNumbering'] = []

@@ -346,7 +346,7 @@ class BaseRequestHandler(RequestHandler):
             'X-Pagination-Limit': arg_limit
         })
 
-        first_page = arg_page if arg_page > 0 else 1
+        first_page = 1
         previous_page = None if arg_page <= 1 else arg_page - 1
         if data_generator:
             results = list(data_generator())[:arg_limit]
@@ -377,7 +377,7 @@ class BaseRequestHandler(RequestHandler):
             count = len(results)
             headers['X-Pagination-Count'] = count
             results = results[start:end]
-            next_page = None if end > count else arg_page + 1
+            next_page = None if end >= count else arg_page + 1
             last_page = ((count - 1) // arg_limit) + 1
             headers['X-Pagination-Total'] = last_page
             if last_page <= arg_page:

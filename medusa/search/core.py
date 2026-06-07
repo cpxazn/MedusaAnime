@@ -494,7 +494,63 @@ def wanted_episodes(series_obj, from_date):
         ]
         wanted.append(ep_obj)
 
+    maybe_rotate_anime_release_group(series_obj, wanted)
+
     return wanted
+
+
+def maybe_rotate_anime_release_group(series_obj, episodes):
+    """Rotate to the next preferred anime release group when overdue episodes are still missing."""
+    if not series_obj.is_anime:
+        return False
+
+    fallback_groups = list(series_obj.anime_release_group_fallback_groups or [])
+    fallback_days = int(series_obj.anime_release_group_fallback_days or 0)
+    if len(fallback_groups) < 2 or fallback_days < 1:
+        return False
+
+    current_group = series_obj.whitelist[0] if series_obj.whitelist else fallback_groups[0]
+    current_index = next(
+        (index for index, group in enumerate(fallback_groups) if group.lower() == current_group.lower()),
+        -1
+    )
+    if current_index < 0 or current_index >= len(fallback_groups) - 1:
+        return False
+
+    today = datetime.date.today()
+    if series_obj.anime_release_group_last_switch:
+        try:
+            last_switch = datetime.datetime.strptime(series_obj.anime_release_group_last_switch, '%Y-%m-%d').date()
+        except ValueError:
+            last_switch = None
+        if last_switch and today < last_switch + datetime.timedelta(days=fallback_days):
+            return False
+
+    overdue_cutoff = today - datetime.timedelta(days=fallback_days)
+    overdue_episodes = [
+        episode for episode in episodes
+        if getattr(episode, 'airdate', None)
+        and episode.airdate > datetime.date.fromordinal(1)
+        and episode.airdate <= overdue_cutoff
+    ]
+    if not overdue_episodes:
+        return False
+
+    next_group = fallback_groups[current_index + 1]
+    series_obj.whitelist = [next_group]
+    series_obj.anime_release_group_last_switch = today.isoformat()
+    series_obj.save_to_db()
+
+    log.info(
+        'Anime release-group fallback switched {show} from {current} to {next_group} after {days} overdue day(s)', {
+            'show': series_obj.name,
+            'current': current_group,
+            'next_group': next_group,
+            'days': fallback_days,
+        }
+    )
+    ws.Message('showUpdated', series_obj.to_json(detailed=False)).push()
+    return True
 
 
 def search_for_needed_episodes(scheduler_start_time, force=False):
@@ -665,6 +721,8 @@ def search_providers(series_obj, episodes, forced_search=False, down_cur_quality
 
     # build name cache for show
     name_cache.build_name_cache(series_obj)
+    if not manual_search:
+        maybe_rotate_anime_release_group(series_obj, episodes)
 
     original_thread_name = threading.currentThread().name
 
