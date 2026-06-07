@@ -206,7 +206,8 @@ export default {
         },
         async connectMyAnimeList() {
             await this.save(false);
-            const next = encodeURIComponent(this.$route.fullPath || '/config/anime');
+            const nextPath = '/config/anime';
+            const next = encodeURIComponent(nextPath);
             const webRoot = this.client && this.client.webRoot ? this.client.webRoot : '';
             window.location.assign(`${webRoot}/api/v2/auth/myanimelist/start?next=${next}`);
         },

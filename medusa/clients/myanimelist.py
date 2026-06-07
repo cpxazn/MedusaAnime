@@ -30,7 +30,7 @@ class MyAnimeListClient(AnimeSource):
     RATE_LIMIT = 10  # requests per second (unauthenticated)
     API_PAGE_SIZE = 100
     API_SEASONAL_FIELDS = (
-        'id,title,main_picture,alternative_titles,start_date,synopsis,mean,media_type,status,genres,'
+        'id,title,main_picture,alternative_titles,start_date,synopsis,mean,num_list_users,media_type,status,genres,'
         'num_episodes,start_season,average_episode_duration,studios'
     )
     API_DETAILS_FIELDS = (
@@ -401,6 +401,7 @@ class MyAnimeListClient(AnimeSource):
             end_date=data.get('end_date'),
             episodes=data.get('num_episodes'),
             score=data.get('mean'),
+            num_list_users=data.get('num_list_users'),
             url='{base}/anime/{anime_id}'.format(base=self.BASE_URL, anime_id=anime_id),
         )
 

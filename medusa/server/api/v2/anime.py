@@ -360,6 +360,7 @@ class AnimeHandler(BaseRequestHandler):
             'episodeDurationMinutes': anime.episode_duration_minutes,
             'episodeInfo': anime.episode_info,
             'score': anime.score,
+            'numListUsers': anime.num_list_users,
             'genres': anime.genres,
             'tags': anime.tags,
             'studios': anime.studios,
