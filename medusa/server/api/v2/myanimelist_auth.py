@@ -68,9 +68,11 @@ class MyAnimeListAuthHandler(BaseRequestHandler):
         if next_path and not next_path.startswith('/'):
             next_path = None
 
+        redirect_uri = self._callback_url()
+
         app.MAL_OAUTH_STATE = state
         app.MAL_OAUTH_CODE_VERIFIER = code_verifier
-        app.MAL_OAUTH_REDIRECT_URI = None
+        app.MAL_OAUTH_REDIRECT_URI = redirect_uri
         app.MAL_OAUTH_NEXT_PATH = next_path
         app.MAL_OAUTH_STARTED_AT = int(time.time())
 
@@ -80,6 +82,7 @@ class MyAnimeListAuthHandler(BaseRequestHandler):
             'state': state,
             'code_challenge': code_verifier,
             'code_challenge_method': 'plain',
+            'redirect_uri': redirect_uri,
         }
         authorize_url = '{base}?{query}'.format(base=self.OAUTH_AUTHORIZE_URL, query=urlencode(params))
         return self._redirect_html(authorize_url, 'Connecting to MyAnimeList...')
