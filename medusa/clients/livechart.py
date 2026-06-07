@@ -114,12 +114,13 @@ class LiveChartClient(AnimeSource):
 
         return results
 
-    def get_seasonal(self, year: int, season: str) -> List[AnimeSeries]:
+    def get_seasonal(self, year: int, season: str, source_sort: Optional[str] = None) -> List[AnimeSeries]:
         """Get seasonal anime for a given year/season.
         
         Args:
             year: Year (e.g., 2026)
             season: Season (SPRING, SUMMER, FALL, WINTER)
+            source_sort: Optional source-specific sort key, ignored for LiveChart
             
         Returns:
             List of AnimeSeries for the season

@@ -631,6 +631,8 @@ const actions = {
         if (data.config.anime) {
             data.config.release.blacklist = showConfig.release.blacklist;
             data.config.release.whitelist = showConfig.release.whitelist;
+            data.config.release.fallbackGroups = showConfig.release.fallbackGroups || [];
+            data.config.release.fallbackDays = Number(showConfig.release.fallbackDays || 0);
         }
 
         return rootState.auth.client.api.patch(`series/${show.id.slug}`, data);

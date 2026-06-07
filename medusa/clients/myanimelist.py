@@ -1,10 +1,10 @@
 # coding=utf-8
-"""MyAnimeList.net anime client (scraping-based)."""
+"""MyAnimeList anime client with official API support and scraper fallback."""
 from __future__ import unicode_literals
 
 import logging
 import re
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup
 
@@ -19,18 +19,26 @@ log.logger.addHandler(logging.NullHandler())
 
 
 class MyAnimeListClient(AnimeSource):
-    """Client for scraping anime data from myanimelist.net.
-    
-    This client uses HTML scraping to work without API access.
-    Once API access is approved, the scraping logic can be replaced
-    with API calls while maintaining the same interface.
-    """
+    """Client for anime data from MyAnimeList."""
 
     BASE_URL = 'https://myanimelist.net'
     SEARCH_URL = f'{BASE_URL}/anime.php?q={{query}}'
     ANIME_URL = f'{BASE_URL}/anime/{{anime_id}}'
     SEASONAL_URL = f'{BASE_URL}/anime/season/{{year}}/{{season}}'
+    API_BASE_URL = 'https://api.myanimelist.net/v2'
+    TOKEN_URL = 'https://myanimelist.net/v1/oauth2/token'
     RATE_LIMIT = 10  # requests per second (unauthenticated)
+    API_PAGE_SIZE = 100
+    API_SEASONAL_FIELDS = (
+        'id,title,main_picture,alternative_titles,start_date,synopsis,mean,media_type,status,genres,'
+        'num_episodes,start_season,average_episode_duration,studios'
+    )
+    API_DETAILS_FIELDS = (
+        'id,title,main_picture,alternative_titles,start_date,end_date,synopsis,mean,rank,popularity,'
+        'num_list_users,num_scoring_users,nsfw,created_at,updated_at,media_type,status,genres,'
+        'my_list_status,num_episodes,start_season,broadcast,source,average_episode_duration,rating,'
+        'pictures,background,related_anime,related_manga,recommendations,studios,statistics'
+    )
 
     # Season mapping
     SEASON_MAP = {
@@ -49,6 +57,100 @@ class MyAnimeListClient(AnimeSource):
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'User-Agent': 'Medusa Anime Lookup (contact: medusa-project)',
         })
+        self.use_official_api = bool(app.USE_MAL_API and app.MAL_ACCESS_TOKEN)
+
+    @classmethod
+    def _token_payload(cls, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Post to the MAL token endpoint and return parsed token data."""
+        session = MedusaSession()
+        try:
+            response = session.post(cls.TOKEN_URL, data=payload, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except Exception as error:
+            log.warning('MyAnimeList token request failed: {error!r}', error=error)
+            return None
+
+    @classmethod
+    def apply_token_data(cls, token_data: Dict[str, Any]) -> bool:
+        """Persist access and refresh tokens in runtime config."""
+        access_token = token_data.get('access_token')
+        refresh_token = token_data.get('refresh_token') or app.MAL_REFRESH_TOKEN
+        if not access_token:
+            return False
+
+        app.MAL_ACCESS_TOKEN = access_token
+        app.MAL_REFRESH_TOKEN = refresh_token
+        app.USE_MAL_API = True
+
+        if app.instance:
+            app.instance.save_config()
+
+        return True
+
+    @classmethod
+    def exchange_authorization_code(cls, code: str, code_verifier: str, redirect_uri: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Exchange an OAuth authorization code for MAL tokens."""
+        payload = {
+            'grant_type': 'authorization_code',
+            'client_id': app.MAL_CLIENT_ID,
+            'code': code,
+            'code_verifier': code_verifier,
+        }
+        if app.MAL_CLIENT_SECRET:
+            payload['client_secret'] = app.MAL_CLIENT_SECRET
+        if redirect_uri:
+            payload['redirect_uri'] = redirect_uri
+
+        return cls._token_payload(payload)
+
+    def _api_headers(self) -> Dict[str, str]:
+        """Build headers for official MAL API requests."""
+        return {
+            'Authorization': 'Bearer {token}'.format(token=app.MAL_ACCESS_TOKEN),
+            'Accept': 'application/json',
+            'User-Agent': 'Medusa Anime Lookup (contact: medusa-project)',
+        }
+
+    def _api_get(self, url: str, params: Optional[Dict[str, Any]] = None, retry: bool = True) -> Optional[Dict[str, Any]]:
+        """Make a GET request against the official MAL API."""
+        if not self.use_official_api:
+            return None
+
+        try:
+            response = self.session.get(url, params=params, headers=self._api_headers(), timeout=30)
+            if response.status_code == 401 and retry and self._refresh_access_token():
+                return self._api_get(url, params=params, retry=False)
+
+            response.raise_for_status()
+            return response.json()
+        except Exception as error:
+            log.warning('MyAnimeList API request failed for {url}: {error!r}', url=url, error=error)
+            return None
+
+    def _refresh_access_token(self) -> bool:
+        """Refresh the MAL access token when a refresh token is configured."""
+        if not (app.MAL_CLIENT_ID and app.MAL_REFRESH_TOKEN):
+            return False
+
+        payload = {
+            'grant_type': 'refresh_token',
+            'refresh_token': app.MAL_REFRESH_TOKEN,
+            'client_id': app.MAL_CLIENT_ID,
+        }
+        if app.MAL_CLIENT_SECRET:
+            payload['client_secret'] = app.MAL_CLIENT_SECRET
+
+        token_data = self._token_payload(payload)
+        if token_data is None:
+            log.warning('MyAnimeList token refresh failed')
+            return False
+
+        if not self.apply_token_data(token_data):
+            return False
+
+        self.use_official_api = True
+        return True
 
     def _get(self, url: str) -> Optional[BeautifulSoup]:
         """Make a GET request and return parsed HTML.
@@ -143,23 +245,28 @@ class MyAnimeListClient(AnimeSource):
 
         return results
 
-    def get_seasonal(self, year: int, season: str) -> List[AnimeSeries]:
+    def get_seasonal(self, year: int, season: str, source_sort: Optional[str] = None) -> List[AnimeSeries]:
         """Get seasonal anime for a given year/season.
         
         Args:
             year: Year (e.g., 2026)
             season: Season (SPRING, SUMMER, FALL, WINTER)
+            source_sort: Optional MAL sort key, e.g. anime_num_list_users or anime_score
             
         Returns:
             List of AnimeSeries for the season
         """
+        api_results = self._get_seasonal_api(year, season, source_sort=source_sort)
+        if api_results is not None:
+            return api_results
+
         results = []
-        
+
         # Build seasonal URL
         season_lower = season.lower() if season else 'spring'
         seasonal_url = self.SEASONAL_URL.format(year=year, season=season_lower)
         soup = self._get(seasonal_url)
-        
+
         if soup:
             results = self._parse_seasonal_page(soup, year, season)
 
@@ -174,9 +281,13 @@ class MyAnimeListClient(AnimeSource):
         Returns:
             AnimeSeries object with full details
         """
+        api_anime = self._get_details_api(mal_id)
+        if api_anime is not None:
+            return api_anime
+
         anime_url = self.ANIME_URL.format(anime_id=mal_id)
         soup = self._get(anime_url)
-        
+
         if not soup:
             return AnimeSeries(anime_id=mal_id, source='myanimelist')
 
@@ -208,6 +319,188 @@ class MyAnimeListClient(AnimeSource):
             results.extend(next_results[:limit - len(results)])
         
         return results[:limit]
+
+    def _get_seasonal_api(self, year: int, season: str, source_sort: Optional[str] = None) -> Optional[List[AnimeSeries]]:
+        """Fetch seasonal anime from the official MAL API."""
+        if not self.use_official_api:
+            return None
+
+        season_key = (season or 'SPRING').lower()
+        sort_key = source_sort or 'anime_num_list_users'
+        results = []
+        offset = 0
+
+        while True:
+            payload = self._api_get(
+                '{base}/anime/season/{year}/{season}'.format(base=self.API_BASE_URL, year=year, season=season_key),
+                params={
+                    'sort': sort_key,
+                    'limit': self.API_PAGE_SIZE,
+                    'offset': offset,
+                    'fields': self.API_SEASONAL_FIELDS,
+                }
+            )
+            if payload is None:
+                return None if offset == 0 else results
+
+            items = payload.get('data') or []
+            if not items:
+                break
+
+            for item in items:
+                anime = self._parse_api_anime(item.get('node', item))
+                if anime:
+                    results.append(anime)
+
+            if len(items) < self.API_PAGE_SIZE:
+                break
+            offset += self.API_PAGE_SIZE
+
+        return results
+
+    def _get_details_api(self, mal_id: int) -> Optional[AnimeSeries]:
+        """Fetch detailed anime metadata from the official MAL API."""
+        if not self.use_official_api:
+            return None
+
+        payload = self._api_get(
+            '{base}/anime/{anime_id}'.format(base=self.API_BASE_URL, anime_id=mal_id),
+            params={'fields': self.API_DETAILS_FIELDS}
+        )
+        if payload is None:
+            return None
+
+        anime = self._parse_api_anime(payload, include_relations=True)
+        if anime is None:
+            return None
+
+        return self._enrich_with_scraped_detail_page(anime, mal_id)
+
+    def _parse_api_anime(self, data: Dict[str, Any], include_relations: bool = False) -> Optional[AnimeSeries]:
+        """Map MAL API payloads onto the AnimeSeries model."""
+        anime_id = data.get('id')
+        if not anime_id:
+            return None
+
+        title = data.get('title')
+        alt_titles = data.get('alternative_titles') or {}
+        english_title = alt_titles.get('en') or title
+        japanese_title = alt_titles.get('ja')
+        synonyms = alt_titles.get('synonyms') or []
+
+        anime = AnimeSeries(
+            anime_id=anime_id,
+            source='myanimelist',
+            mal_id=anime_id,
+            title_english=english_title,
+            title_romanji=title,
+            title_japanese=japanese_title,
+            title_synonyms=[syn for syn in synonyms if syn],
+            synopsis=data.get('synopsis'),
+            start_date=data.get('start_date'),
+            end_date=data.get('end_date'),
+            episodes=data.get('num_episodes'),
+            score=data.get('mean'),
+            url='{base}/anime/{anime_id}'.format(base=self.BASE_URL, anime_id=anime_id),
+        )
+
+        media_type = (data.get('media_type') or '').upper()
+        if media_type:
+            anime.anime_type = media_type
+
+        status_map = {
+            'currently_airing': 'airing',
+            'finished_airing': 'finished',
+            'not_yet_aired': 'upcoming',
+        }
+        anime.status = status_map.get(data.get('status'), anime.status)
+
+        start_season = data.get('start_season') or {}
+        anime.year = start_season.get('year')
+        anime.season = (start_season.get('season') or '').upper() or None
+        if anime.year is None and anime.start_date:
+            year_match = re.match(r'(\d{4})-(\d{2})-(\d{2})', anime.start_date)
+            if year_match:
+                anime.year = int(year_match.group(1))
+                anime.season = self._month_to_season(int(year_match.group(2)))
+
+        duration = data.get('average_episode_duration')
+        if duration:
+            anime.episode_duration_minutes = int(duration / 60)
+
+        anime.genres = [genre.get('name') for genre in data.get('genres') or [] if genre.get('name')]
+        anime.studios = [studio.get('name') for studio in data.get('studios') or [] if studio.get('name')]
+
+        main_picture = data.get('main_picture') or {}
+        pictures = data.get('pictures') or []
+        if main_picture:
+            anime.image_url = main_picture.get('large') or main_picture.get('medium')
+        if not anime.image_url and pictures:
+            first_picture = pictures[0] or {}
+            anime.image_url = first_picture.get('large') or first_picture.get('medium')
+
+        # The official MAL API does not document AniDB IDs; preserve one if it appears unexpectedly.
+        anime.anidb_id = data.get('anidb_id')
+        anime.anilist_id = data.get('anilist_id')
+        anime.tvdb_id = data.get('tvdb_id')
+
+        if include_relations:
+            for related in data.get('related_anime') or []:
+                related_node = related.get('node') or {}
+                related_anime_id = related_node.get('id')
+                if not related_anime_id:
+                    continue
+
+                related_series = AnimeSeries(
+                    anime_id=related_anime_id,
+                    source='myanimelist',
+                    mal_id=related_anime_id,
+                    title_english=related_node.get('title'),
+                    title_romanji=related_node.get('title'),
+                    url='{base}/anime/{anime_id}'.format(base=self.BASE_URL, anime_id=related_anime_id),
+                )
+
+                relation_type = related.get('relation_type')
+                if relation_type == 'prequel':
+                    anime.prequels.append(related_series)
+                elif relation_type == 'sequel':
+                    anime.sequels.append(related_series)
+
+        return anime
+
+    def _enrich_with_scraped_detail_page(self, anime: AnimeSeries, mal_id: int) -> AnimeSeries:
+        """Scrape the MAL detail page for cross refs and any fields the official API omits."""
+        anime_url = self.ANIME_URL.format(anime_id=mal_id)
+        soup = self._get(anime_url)
+        if not soup:
+            return anime
+
+        try:
+            scraped = self._parse_anime_details(soup, mal_id)
+        except Exception as error:
+            log.debug('Failed to enrich MAL API details from HTML for {mal_id}: {error}', mal_id=mal_id, error=error)
+            return anime
+
+        if not anime.anidb_id:
+            anime.anidb_id = scraped.anidb_id
+        if not anime.anilist_id:
+            anime.anilist_id = scraped.anilist_id
+        if not anime.tvdb_id:
+            anime.tvdb_id = scraped.tvdb_id
+        if not anime.image_url:
+            anime.image_url = scraped.image_url
+        if not anime.synopsis:
+            anime.synopsis = scraped.synopsis
+        if not anime.title_japanese:
+            anime.title_japanese = scraped.title_japanese
+        if not anime.title_romanji and scraped.title_romanji:
+            anime.title_romanji = scraped.title_romanji
+        if not anime.title_english and scraped.title_english:
+            anime.title_english = scraped.title_english
+        if not anime.title_synonyms and scraped.title_synonyms:
+            anime.title_synonyms = scraped.title_synonyms
+
+        return anime
 
     def _parse_search_result(self, item) -> Optional[AnimeSeries]:
         """Parse anime data from a search result item.
@@ -292,18 +585,22 @@ class MyAnimeListClient(AnimeSource):
             List of AnimeSeries objects
         """
         results = []
-        
-        # MAL seasonal page has a table structure
-        # Look for anime entries in the seasonal table
+
+        seasonal_entries = soup.find_all('div', class_=re.compile(r'(^|\s)(js-seasonal-anime|seasonal-anime)(\s|$)', re.I))
+        if seasonal_entries:
+            for entry in seasonal_entries:
+                anime = self._parse_seasonal_entry(entry, year, season)
+                if anime:
+                    results.append(anime)
+            return results
+
+        # Older MAL layouts used tables; keep this as a compatibility fallback.
         anime_rows = soup.find_all('tr', class_=re.compile(r'anime-planning|anime-list-', re.I))
-        
         if not anime_rows:
-            # Try alternative: look for all anime entries in the seasonal section
             seasonal_section = soup.find('table', class_=re.compile(r'seasonal', re.I))
             if seasonal_section:
                 anime_rows = seasonal_section.find_all('tr')
             else:
-                # Fallback: find all anime links in the page
                 anime_links = soup.find_all('a', href=re.compile(r'/anime/\d+'))
                 for link in anime_links[:50]:
                     anime = self._parse_anime_link(link, year, season)
@@ -317,6 +614,101 @@ class MyAnimeListClient(AnimeSource):
                 results.append(anime)
 
         return results
+
+    def _parse_seasonal_entry(self, entry, year: int, season: str) -> Optional[AnimeSeries]:
+        """Parse anime data from MAL's current seasonal card layout."""
+        try:
+            title_link = entry.find('a', class_=re.compile(r'link-title', re.I))
+            if not title_link:
+                title_link = entry.find('a', href=re.compile(r'/anime/\d+'))
+            if not title_link:
+                return None
+
+            href = title_link.get('href', '')
+            anime_id_match = re.search(r'/anime/(\d+)', href)
+            if not anime_id_match:
+                return None
+
+            anime_id = int(anime_id_match.group(1))
+            title = title_link.get_text(strip=True) or entry.find('span', class_='js-title')
+            if not isinstance(title, str):
+                title = title.get_text(strip=True) if title else None
+            if not title:
+                return None
+
+            synopsis = None
+            synopsis_block = entry.find('div', class_=re.compile(r'(^|\s)(js-synopsis|synopsis)(\s|$)', re.I))
+            if synopsis_block:
+                synopsis_text = synopsis_block.get_text(' ', strip=True)
+                synopsis = synopsis_text or None
+
+            image_url = None
+            image = entry.find('img')
+            if image:
+                image_url = image.get('data-src') or image.get('src')
+
+            score = None
+            score_node = entry.find('span', class_='js-score')
+            if score_node:
+                score_text = score_node.get_text(strip=True)
+                try:
+                    score = float(score_text) if score_text and score_text != 'N/A' else None
+                except ValueError:
+                    score = None
+
+            episodes = None
+            duration_minutes = None
+            info_items = entry.select('div.prodsrc div.info span.item')
+            if len(info_items) >= 2:
+                info_text = info_items[1].get_text(' ', strip=True)
+                episode_match = re.search(r'(\d+)\s*eps?', info_text, re.I)
+                if episode_match:
+                    episodes = int(episode_match.group(1))
+                duration_match = re.search(r'(\d+)\s*min', info_text, re.I)
+                if duration_match:
+                    duration_minutes = int(duration_match.group(1))
+
+            genres = []
+            for genre_link in entry.select('div.genres a'):
+                genre = genre_link.get_text(strip=True)
+                if genre:
+                    genres.append(genre)
+
+            anime_type = 'TV'
+            type_classes = ' '.join(entry.get('class') or [])
+            if 'js-anime-type-2' in type_classes:
+                anime_type = 'MOVIE'
+            elif 'js-anime-type-3' in type_classes:
+                anime_type = 'OVA'
+            elif 'js-anime-type-4' in type_classes:
+                anime_type = 'SPECIAL'
+            elif 'js-anime-type-5' in type_classes:
+                anime_type = 'ONA'
+
+            url = f"{self.BASE_URL}{href}" if href.startswith('/') else href
+
+            anime = AnimeSeries(
+                anime_id=anime_id,
+                source='myanimelist',
+                mal_id=anime_id,
+                title_english=title,
+                title_romanji=title,
+                synopsis=synopsis,
+                image_url=image_url,
+                episodes=episodes,
+                episode_duration_minutes=duration_minutes,
+                score=score,
+                genres=genres,
+                anime_type=anime_type,
+                url=url,
+                year=year,
+                season=season,
+            )
+
+            return anime
+        except Exception as error:
+            log.debug('Failed to parse seasonal entry: {error}', error=error)
+            return None
 
     def _parse_anime_link(self, link, year: int, season: str) -> Optional[AnimeSeries]:
         """Parse anime data from a link element.
@@ -337,6 +729,12 @@ class MyAnimeListClient(AnimeSource):
 
             anime_id = int(anime_id_match.group(1))
             title = link.get_text(strip=True)
+            if not title:
+                image = link.find('img') or (link.parent.find('img') if link.parent else None)
+                title = (image.get('alt') if image else '') or ''
+            title = title.strip()
+            if not title:
+                return None
             url = f"{self.BASE_URL}{href}" if href.startswith('/') else href
 
             return AnimeSeries(
@@ -436,38 +834,40 @@ class MyAnimeListClient(AnimeSource):
 
         try:
             # Get the main title
-            title_section = soup.find('section', class_='header-title')
+            title_section = soup.find('h1', class_=re.compile(r'title-name|h1_bold_none|se-title', re.I))
             if not title_section:
-                title_section = soup.find('h1', class_=re.compile(r'se-title', re.I))
-            
+                title_section = soup.find('section', class_='header-title')
+
             if title_section:
-                title_elem = title_section.find('span', class_='')
+                title_elem = title_section.find(['strong', 'span'])
                 if title_elem:
-                    anime.title_english = title_elem.get_text(strip=True)
+                    anime.title_romanji = title_elem.get_text(strip=True)
                 else:
-                    anime.title_english = title_section.get_text(strip=True)
+                    anime.title_romanji = title_section.get_text(strip=True)
 
-            # Get alternative titles
-            title_alt = soup.find('div', class_='title-alt')
+            # Get alternative titles from MAL's current hidden alternative-title block.
+            title_alt = soup.find('div', class_=re.compile(r'js-alternative-titles|title-alt', re.I))
             if title_alt:
-                jp_text = title_alt.find('span', class_='')
-                if jp_text:
-                    text = jp_text.get_text(strip=True)
-                    if '\u4e00' in text or '\u3040' in text:
-                        anime.title_japanese = text
-                    else:
-                        anime.title_romanji = text
+                for alt_row in title_alt.find_all('div', class_=re.compile(r'spaceit_pad', re.I)):
+                    label_node = alt_row.find('span', class_=re.compile(r'dark_text', re.I))
+                    if not label_node:
+                        continue
 
-            # Get synonyms from the title alternatives section
-            syn_section = soup.find('span', class_='title-name')
-            if syn_section:
-                parent = syn_section.find_parent()
-                if parent:
-                    syn_text = parent.get_text()
-                    if ':' in syn_text:
-                        parts = syn_text.split(':', 1)
-                        if len(parts) > 1:
-                            anime.title_synonyms = [s.strip() for s in parts[1].split(',') if s.strip()]
+                    label = label_node.get_text(' ', strip=True).rstrip(':').lower()
+                    value = alt_row.get_text(' ', strip=True)
+                    value = value.replace(label_node.get_text(' ', strip=True), '', 1).strip()
+                    if not value or value == 'None':
+                        continue
+
+                    if label == 'english':
+                        anime.title_english = value
+                    elif label == 'japanese':
+                        anime.title_japanese = value
+                    elif label == 'synonyms':
+                        anime.title_synonyms = [item.strip() for item in value.split(',') if item.strip()]
+
+            if not anime.title_english and anime.title_romanji:
+                anime.title_english = anime.title_romanji
 
             # Get synopsis
             synopsis_section = soup.find('p', class_='') or soup.find('div', class_='')

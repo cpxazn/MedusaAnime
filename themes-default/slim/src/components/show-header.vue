@@ -237,6 +237,19 @@
                                                 <td>{{show.config.release.blacklist.join(', ')}}</td>
                                             </tr>
 
+                                            <tr v-if="show.config.anime && show.config.release.fallbackGroups && show.config.release.fallbackGroups.length > 0">
+                                                <td class="showLegend">Fallback Groups:</td>
+                                                <td>
+                                                    {{show.config.release.fallbackGroups.join(' → ')}}
+                                                    <template v-if="show.config.release.fallbackDays > 0">
+                                                        after {{show.config.release.fallbackDays}} day(s)
+                                                    </template>
+                                                    <template v-else>
+                                                        disabled
+                                                    </template>
+                                                </td>
+                                            </tr>
+
                                             <tr v-if="show.config.airdateOffset !== 0">
                                                 <td class="showLegend">Daily search offset:</td>
                                                 <td>{{show.config.airdateOffset}} hours</td>

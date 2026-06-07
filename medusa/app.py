@@ -498,6 +498,16 @@ class MedusaApp(object):
         self.ANIDB_USERNAME = None
         self.ANIDB_PASSWORD = None
         self.ANIDB_USE_MYLIST = False
+        self.USE_MAL_API = False
+        self.MAL_CLIENT_ID = None
+        self.MAL_CLIENT_SECRET = None
+        self.MAL_ACCESS_TOKEN = None
+        self.MAL_REFRESH_TOKEN = None
+        self.MAL_OAUTH_STATE = None
+        self.MAL_OAUTH_CODE_VERIFIER = None
+        self.MAL_OAUTH_REDIRECT_URI = None
+        self.MAL_OAUTH_NEXT_PATH = None
+        self.MAL_OAUTH_STARTED_AT = None
         self.ADBA_CONNECTION = None
         self.ANIME_SPLIT_HOME = False
         self.ANIME_SPLIT_HOME_IN_TABS = False

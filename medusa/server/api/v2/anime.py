@@ -24,6 +24,8 @@ log.logger.addHandler(logging.NullHandler())
 class AnimeHandler(BaseRequestHandler):
     """Request handler for anime lookup from external sources."""
 
+    SEASONAL_SORT_OPTIONS = ('anime_num_list_users', 'anime_score')
+
     #: resource name
     name = 'anime'
     #: identifier
@@ -49,7 +51,7 @@ class AnimeHandler(BaseRequestHandler):
         if identifier == 'search':
             # Search by query string
             query = self.get_argument('q', default=None)
-            source = self.get_argument('source', default='livechart')
+            source = self.get_argument('source', default='myanimelist')
             year = self._parse(self.get_argument('year', default=None))
             season = self.get_argument('season', default=None)
 
@@ -85,7 +87,8 @@ class AnimeHandler(BaseRequestHandler):
             # Get seasonal anime
             year = self._parse(self.get_argument('year', default=None))
             season = self.get_argument('season', default=None)
-            source = self.get_argument('source', default='livechart')
+            source = self.get_argument('source', default='myanimelist')
+            source_sort = self.get_argument('sourceSort', default='anime_num_list_users')
 
             if not year:
                 return self._bad_request('Year parameter is required for seasonal queries')
@@ -94,18 +97,23 @@ class AnimeHandler(BaseRequestHandler):
             if not client:
                 return self._bad_request('Invalid source. Use: livechart, myanimelist')
 
+            if source_sort not in self.SEASONAL_SORT_OPTIONS:
+                return self._bad_request(
+                    'Invalid sourceSort. Use: {0}'.format(', '.join(self.SEASONAL_SORT_OPTIONS))
+                )
+
             try:
-                results = client.get_seasonal(year, season or 'SPRING')
+                results = client.get_seasonal(year, season or 'SPRING', source_sort=source_sort)
             except Exception as error:
                 log.warning('Seasonal fetch failed: {error}', error=error)
                 return self._internal_server_error(str(error))
 
             data = [self._anime_to_json(anime) for anime in results]
-            return self._paginate(data, sort='-year')
+            return self._paginate(data)
 
         elif identifier == 'upcoming':
             # Get upcoming anime
-            source = self.get_argument('source', default='livechart')
+            source = self.get_argument('source', default='myanimelist')
             limit = self._parse(self.get_argument('limit', default=20))
 
             client = self._get_client(source)
@@ -124,7 +132,7 @@ class AnimeHandler(BaseRequestHandler):
         elif identifier == 'details':
             # Get anime details
             anime_id = self._parse(self.get_argument('id', default=None))
-            source = self.get_argument('source', default='livechart')
+            source = self.get_argument('source', default='myanimelist')
 
             if not anime_id:
                 return self._bad_request('Anime ID parameter is required')
@@ -157,7 +165,7 @@ class AnimeHandler(BaseRequestHandler):
         elif identifier == 'match':
             # Match anime to existing shows
             anime_id = self._parse(self.get_argument('id', default=None))
-            source = self.get_argument('source', default='livechart')
+            source = self.get_argument('source', default='myanimelist')
             limit = self._parse(self.get_argument('limit', default=10))
 
             client = self._get_client(source)
@@ -208,7 +216,7 @@ class AnimeHandler(BaseRequestHandler):
 
         # Extract anime data
         anime_id = data.get('anime_id')
-        source = data.get('source', 'livechart')
+        source = data.get('source', 'myanimelist')
         root_dir = data.get('root_dir')
         anime_option = data.get('anime', True)
         release_groups = data.get('release_groups', [])

@@ -107,6 +107,23 @@ import trakt
 logger = logging.getLogger(__name__)
 
 
+def check_setting_secret_compatible(config, cfg_name, item_name, default=''):
+    """Load a secret that may be stored encrypted or as plain text."""
+    value = check_setting_str(config, cfg_name, item_name, default, censor_log='low')
+
+    if not value or app.ENCRYPTION_VERSION == 0:
+        return value
+
+    try:
+        decrypted = helpers.decrypt(value, app.ENCRYPTION_VERSION)
+        if str(decrypted) != str(None):
+            return decrypted
+    except Exception:
+        pass
+
+    return value
+
+
 class Application(object):
     """Main application module."""
 
@@ -447,7 +464,7 @@ class Application(object):
             sections = [
                 'General', 'Blackhole', 'Newzbin', 'SABnzbd', 'NZBget', 'KODI', 'PLEX', 'Emby', 'Growl', 'Prowl', 'Twitter',
                 'Boxcar2', 'NMJ', 'NMJv2', 'Synology', 'Slack', 'SynologyNotifier', 'pyTivo', 'Pushalot', 'Pushbullet', 'Join',
-                'Subtitles', 'pyTivo',
+                'Subtitles', 'pyTivo', 'MYANIMELIST',
             ]
 
             for section in sections:
@@ -1013,6 +1030,11 @@ class Application(object):
             app.ANIDB_USERNAME = check_setting_str(app.CFG, 'ANIDB', 'anidb_username', '', censor_log='normal')
             app.ANIDB_PASSWORD = check_setting_str(app.CFG, 'ANIDB', 'anidb_password', '', censor_log='low')
             app.ANIDB_USE_MYLIST = bool(check_setting_int(app.CFG, 'ANIDB', 'anidb_use_mylist', 0))
+            app.USE_MAL_API = bool(check_setting_int(app.CFG, 'MYANIMELIST', 'use_mal_api', 0))
+            app.MAL_CLIENT_ID = check_setting_str(app.CFG, 'MYANIMELIST', 'mal_client_id', '', censor_log='normal')
+            app.MAL_CLIENT_SECRET = check_setting_secret_compatible(app.CFG, 'MYANIMELIST', 'mal_client_secret', '')
+            app.MAL_ACCESS_TOKEN = check_setting_secret_compatible(app.CFG, 'MYANIMELIST', 'mal_access_token', '')
+            app.MAL_REFRESH_TOKEN = check_setting_secret_compatible(app.CFG, 'MYANIMELIST', 'mal_refresh_token', '')
             app.ANIME_SPLIT_HOME = bool(check_setting_int(app.CFG, 'ANIME', 'anime_split_home', 0))
             app.ANIME_SPLIT_HOME_IN_TABS = bool(check_setting_int(app.CFG, 'ANIME', 'anime_split_home_in_tabs', 0))
             app.AUTO_ANIME_TO_LIST = bool(check_setting_int(app.CFG, 'ANIME', 'auto_anime_to_list', 0))
@@ -2039,6 +2061,13 @@ class Application(object):
         new_config['Trakt']['trakt_default_indexer'] = int(app.TRAKT_DEFAULT_INDEXER)
         new_config['Trakt']['trakt_timeout'] = int(app.TRAKT_TIMEOUT)
         new_config['Trakt']['trakt_blacklist_name'] = app.TRAKT_BLACKLIST_NAME
+
+        new_config['MYANIMELIST'] = {}
+        new_config['MYANIMELIST']['use_mal_api'] = int(app.USE_MAL_API)
+        new_config['MYANIMELIST']['mal_client_id'] = app.MAL_CLIENT_ID or ''
+        new_config['MYANIMELIST']['mal_client_secret'] = helpers.encrypt(app.MAL_CLIENT_SECRET or '', app.ENCRYPTION_VERSION)
+        new_config['MYANIMELIST']['mal_access_token'] = helpers.encrypt(app.MAL_ACCESS_TOKEN or '', app.ENCRYPTION_VERSION)
+        new_config['MYANIMELIST']['mal_refresh_token'] = helpers.encrypt(app.MAL_REFRESH_TOKEN or '', app.ENCRYPTION_VERSION)
 
         new_config['pyTivo'] = {}
         new_config['pyTivo']['use_pytivo'] = int(app.USE_PYTIVO)

@@ -31,9 +31,21 @@ export default new Vue({
     },
     async mounted() {
         const { getShows, setLoadingDisplay, setLoadingFinished } = this;
+        const searchParams = new URLSearchParams(window.location.search || '');
 
         if (isDevelopment) {
             console.log('App Mounted!');
+        }
+
+        if (searchParams.get('code') && searchParams.get('state')) {
+            let webRoot = document.body.getAttribute('web-root') || '';
+            if (webRoot && !webRoot.startsWith('/')) {
+                webRoot = `/${webRoot}`;
+            }
+            webRoot = webRoot.replace(/\/$/, '');
+            const completionUrl = `${window.location.origin}${webRoot}/api/v2/auth/myanimelist/complete?${searchParams.toString()}`;
+            window.location.replace(completionUrl);
+            return;
         }
 
         await this.$store.dispatch('auth');
@@ -90,4 +102,3 @@ export default new Vue({
         }
     }
 }).$mount('#app-wrapper');
-
