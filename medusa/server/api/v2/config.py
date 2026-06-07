@@ -526,6 +526,9 @@ class ConfigHandler(BaseRequestHandler):
         'anime.anidb.username': StringField(app, 'ANIDB_USERNAME'),
         'anime.anidb.password': StringField(app, 'ANIDB_PASSWORD'),
         'anime.anidb.useMylist': BooleanField(app, 'ANIDB_USE_MYLIST'),
+        'anime.mal.enabled': BooleanField(app, 'USE_MAL_API'),
+        'anime.mal.clientId': StringField(app, 'MAL_CLIENT_ID'),
+        'anime.mal.clientSecret': StringField(app, 'MAL_CLIENT_SECRET'),
         'anime.autoAnimeToList': BooleanField(app, 'AUTO_ANIME_TO_LIST'),
         'anime.showlistDefaultAnime': ListField(app, 'SHOWLISTS_DEFAULT_ANIME'),
         'anime.preferredReleaseGroups': ListField(app, 'PREFERRED_ANIME_RELEASE_GROUPS'),
@@ -1350,6 +1353,12 @@ class DataGenerator(object):
                 'username': app.ANIDB_USERNAME,
                 'password': app.ANIDB_PASSWORD,
                 'useMylist': bool(app.ANIDB_USE_MYLIST)
+            },
+            'mal': {
+                'enabled': bool(app.USE_MAL_API),
+                'clientId': app.MAL_CLIENT_ID or '',
+                'clientSecret': app.MAL_CLIENT_SECRET or '',
+                'connected': bool(app.MAL_ACCESS_TOKEN and app.MAL_REFRESH_TOKEN)
             },
             'autoAnimeToList': bool(app.AUTO_ANIME_TO_LIST),
             'showlistDefaultAnime': app.SHOWLISTS_DEFAULT_ANIME,

@@ -7,6 +7,12 @@ const state = {
         password: null,
         useMylist: false
     },
+    mal: {
+        enabled: false,
+        clientId: '',
+        clientSecret: '',
+        connected: false
+    },
     autoAnimeToList: false,
     showlistDefaultAnime: [],
     preferredReleaseGroups: []
