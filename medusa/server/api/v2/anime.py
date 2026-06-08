@@ -7,6 +7,7 @@ import os
 import re
 
 from medusa import app
+from medusa.common import statusStrings
 from medusa.clients.anime import AnimeSeries
 from medusa.clients.livechart import LiveChartClient
 from medusa.clients.myanimelist import MyAnimeListClient
@@ -272,14 +273,27 @@ class AnimeHandler(BaseRequestHandler):
         indexer_id = INDEXER_TVDBV2
         indexer_value = tvdb_id
 
+        default_status = self._parse_episode_status(data.get('status', 'wanted'))
+        if default_status is None:
+            return self._bad_request('Invalid status')
+
+        default_status_after = self._parse_episode_status(data.get('status_after'))
+
         # Build options
         options = {
-            'default_status': data.get('status', 'wanted'),
+            'default_status': default_status,
+            'quality': data.get('quality', {'preferred': [], 'allowed': []}),
+            'season_folders': data.get('season_folders'),
+            'lang': data.get('language'),
+            'subtitles': data.get('subtitles'),
             'anime': anime_option,
             'scene': data.get('scene', True),
+            'paused': data.get('paused'),
             'root_dir': root_dir,
             'blacklist': blacklist or (blacklist if blacklist else None),
             'whitelist': whitelist or (whitelist if whitelist else None),
+            'default_status_after': default_status_after,
+            'show_lists': data.get('show_lists'),
         }
 
         if release_group_fallback_days is None:
@@ -307,6 +321,27 @@ class AnimeHandler(BaseRequestHandler):
             return self._internal_server_error(str(error))
 
         return self._created(data=queue_item_obj.to_json)
+
+    @staticmethod
+    def _parse_episode_status(status):
+        """Parse an API status value into Medusa's numeric episode status."""
+        if status in (None, ''):
+            return None
+
+        try:
+            status_id = int(status)
+        except (TypeError, ValueError):
+            status_id = None
+
+        if status_id in statusStrings:
+            return status_id
+
+        status_text = str(status).strip().lower()
+        for status_id, status_name in statusStrings.items():
+            if status_name.lower() == status_text:
+                return status_id
+
+        return None
 
     @staticmethod
     def _normalize_title(title):
