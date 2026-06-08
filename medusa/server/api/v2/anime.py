@@ -3,13 +3,16 @@
 from __future__ import unicode_literals
 
 import logging
+import os
+import re
 
 from medusa import app
 from medusa.clients.anime import AnimeSeries
 from medusa.clients.livechart import LiveChartClient
 from medusa.clients.myanimelist import MyAnimeListClient
 from medusa.helpers.anime_matcher import match_anime_to_show, find_similar_anime
-from medusa.indexers.config import EXTERNAL_ANIDB
+from medusa.indexers.api import indexerApi
+from medusa.indexers.config import INDEXER_TVDBV2
 from medusa.logger.adapters.style import BraceAdapter
 from medusa.server.api.v2.base import BaseRequestHandler
 from medusa.show.recommendations.recommended import cached_aid_to_tvdb
@@ -248,34 +251,26 @@ class AnimeHandler(BaseRequestHandler):
         if existing_show:
             return self._conflict('Anime already exists in library: {0}'.format(existing_show.title))
 
-        # Generate directory name
-        dir_name = data.get('directory_name', None)
-        if not dir_name:
-            dir_name = anime_obj.directory_name
+        # Generate the full show directory path. QueueItemAdd treats show_dir as a full path,
+        # so join relative directory names to root_dir before queuing the add.
+        dir_name = data.get('directory_name', None) or anime_obj.directory_name
+        show_dir = dir_name
+        if dir_name and root_dir and not os.path.isabs(dir_name):
+            show_dir = os.path.join(root_dir, dir_name)
 
-        # Build the identifier for the show queue
-        # Try to find the TVDB ID via cross-references
-        identifier_str = None
-        indexer_id = EXTERNAL_ANIDB
-        indexer_value = anime_obj.anime_id
+        # Build the identifier for the show queue. The show queue expects a real Medusa
+        # indexer ID; AniDB is only used as a bridge to TVDB and is not queued directly.
+        if not anime_obj.anidb_id:
+            return self._bad_request('Could not resolve AniDB ID for this anime')
 
-        if anime_obj.anidb_id:
-            try:
-                tvdb_id = cached_aid_to_tvdb(anime_obj.anidb_id)
-                if tvdb_id:
-                    identifier_str = 'tvdb{0}'.format(tvdb_id)
-                    indexer_id = 'tvdb'
-                    indexer_value = tvdb_id
-            except Exception:
-                pass
+        tvdb_id = self._resolve_tvdb_id(anime_obj)
+        if not tvdb_id:
+            return self._bad_request(
+                'Could not map AniDB ID {0} to a TVDB ID'.format(anime_obj.anidb_id)
+            )
 
-        if not identifier_str:
-            # Use AniDB as fallback
-            if not anime_obj.anidb_id:
-                return self._bad_request('Could not find a valid indexer ID for this anime')
-            identifier_str = 'anidb{0}'.format(anime_obj.anidb_id)
-            indexer_id = 'anidb'
-            indexer_value = anime_obj.anidb_id
+        indexer_id = INDEXER_TVDBV2
+        indexer_value = tvdb_id
 
         # Build options
         options = {
@@ -304,20 +299,100 @@ class AnimeHandler(BaseRequestHandler):
         options['anime_release_group_last_switch'] = None
 
         try:
-            from medusa.indexers.utils import slug_to_indexer_id
-            
-            # Create identifier
-            if isinstance(indexer_id, str):
-                indexer_id = slug_to_indexer_id(indexer_id)
-            
             queue_item_obj = app.show_queue_scheduler.action.addShow(
-                indexer_id, indexer_value, dir_name, **options
+                indexer_id, indexer_value, show_dir, **options
             )
         except Exception as error:
             log.warning('Failed to add anime to queue: {error}', error=error)
             return self._internal_server_error(str(error))
 
         return self._created(data=queue_item_obj.to_json)
+
+    @staticmethod
+    def _normalize_title(title):
+        """Normalize a title for cross-source comparisons."""
+        if not title:
+            return ''
+        return re.sub(r'[^a-z0-9]+', '', title.lower())
+
+    def _tvdb_search_titles(self, anime: AnimeSeries):
+        """Generate candidate titles to search on TVDB."""
+        titles = [
+            anime.title_english,
+            anime.title_romanji,
+            anime.title_japanese,
+            anime.display_title,
+        ]
+        titles.extend(anime.title_synonyms or [])
+
+        seen = set()
+        for title in titles:
+            normalized = self._normalize_title(title)
+            if title and normalized and normalized not in seen:
+                seen.add(normalized)
+                yield title
+
+    def _tvdb_result_matches(self, anime: AnimeSeries, result: dict) -> bool:
+        """Return True when a TVDB search result is a safe match for this anime."""
+        anime_titles = {self._normalize_title(title) for title in self._tvdb_search_titles(anime)}
+        result_titles = [result.get('seriesname')]
+        result_titles.extend((result.get('aliases') or '').split('|'))
+
+        if not any(self._normalize_title(title) in anime_titles for title in result_titles):
+            return False
+
+        first_aired = result.get('firstaired') or ''
+        if anime.year and first_aired[:4].isdigit() and int(first_aired[:4]) != anime.year:
+            return False
+
+        return True
+
+    def _search_tvdb_id(self, anime: AnimeSeries):
+        """Fallback to TVDB search when AniDB's mapping list does not know this anime yet."""
+        try:
+            tvdb_api = indexerApi(INDEXER_TVDBV2)
+            tvdb = tvdb_api.indexer(**tvdb_api.api_params)
+        except Exception as error:
+            log.warning('Unable to initialize TVDB search for {title}: {error}', title=anime.display_title, error=error)
+            return None
+
+        for title in self._tvdb_search_titles(anime):
+            try:
+                results = tvdb.search(title) or []
+            except Exception as error:
+                log.debug('TVDB search failed for {title}: {error}', title=title, error=error)
+                continue
+
+            for result in results:
+                if self._tvdb_result_matches(anime, result):
+                    return result.get('id')
+
+        return None
+
+    def _resolve_tvdb_id(self, anime: AnimeSeries):
+        """Resolve a TVDB ID for an anime using AniDB mapping, then TVDB title search."""
+        if anime.tvdb_id:
+            return anime.tvdb_id
+
+        if anime.anidb_id:
+            try:
+                tvdb_id = cached_aid_to_tvdb(anime.anidb_id)
+                if tvdb_id:
+                    return tvdb_id
+            except Exception as error:
+                log.warning(
+                    'Failed to map AniDB ID {anidb_id} to TVDB ID: {error}',
+                    anidb_id=anime.anidb_id,
+                    error=error
+                )
+
+        tvdb_id = self._search_tvdb_id(anime)
+        if tvdb_id:
+            log.info('Resolved TVDB ID {tvdb_id} for {title} using TVDB search fallback', {
+                'tvdb_id': tvdb_id,
+                'title': anime.display_title,
+            })
+        return tvdb_id
 
     def _get_client(self, source: str):
         """Get the appropriate anime client.
