@@ -29,10 +29,11 @@ class MyAnimeListClient(AnimeSource):
     TOKEN_URL = 'https://myanimelist.net/v1/oauth2/token'
     RATE_LIMIT = 10  # requests per second (unauthenticated)
     API_PAGE_SIZE = 100
-    API_SEASONAL_FIELDS = (
+    API_SEARCH_FIELDS = (
         'id,title,main_picture,alternative_titles,start_date,synopsis,mean,num_list_users,media_type,status,genres,'
         'num_episodes,start_season,average_episode_duration,studios'
     )
+    API_SEASONAL_FIELDS = API_SEARCH_FIELDS
     API_DETAILS_FIELDS = (
         'id,title,main_picture,alternative_titles,start_date,end_date,synopsis,mean,rank,popularity,'
         'num_list_users,num_scoring_users,nsfw,created_at,updated_at,media_type,status,genres,'
@@ -169,15 +170,22 @@ class MyAnimeListClient(AnimeSource):
             log.warning('MyAnimeList request failed for {url}: {error!r}', url=url, error=error)
             return None
 
-    def search(self, query: str) -> List[AnimeSeries]:
+    def search(self, query: str, include_details: bool = False, limit: Optional[int] = None) -> List[AnimeSeries]:
         """Search for anime by title.
         
         Args:
             query: Search query string
+            include_details: Whether to request enriched metadata when supported
+            limit: Optional maximum number of results to return
             
         Returns:
             List of matching AnimeSeries objects
         """
+        if include_details:
+            api_results = self._search_api(query, limit=limit)
+            if api_results is not None:
+                return api_results
+
         results = []
 
         # Build search URL - MAL uses /anime.php?q=query
@@ -240,8 +248,43 @@ class MyAnimeListClient(AnimeSource):
                 url=url,
             ))
 
-            if len(results) >= 60:
+            max_results = limit or 60
+            if len(results) >= max_results:
                 break
+
+        if include_details:
+            enriched = []
+            for anime in results:
+                detailed = self.get_details(anime.anime_id)
+                if detailed and detailed.anime_id:
+                    enriched.append(detailed)
+                else:
+                    enriched.append(anime)
+            results = enriched
+
+        return results
+
+    def _search_api(self, query: str, limit: Optional[int] = None) -> Optional[List[AnimeSeries]]:
+        """Search anime through the official MAL API with enriched fields."""
+        if not self.use_official_api:
+            return None
+
+        payload = self._api_get(
+            '{base}/anime'.format(base=self.API_BASE_URL),
+            params={
+                'q': query,
+                'limit': min(limit or 20, self.API_PAGE_SIZE),
+                'fields': self.API_SEARCH_FIELDS,
+            }
+        )
+        if payload is None:
+            return None
+
+        results = []
+        for item in payload.get('data') or []:
+            anime = self._parse_api_anime(item.get('node', item))
+            if anime:
+                results.append(anime)
 
         return results
 

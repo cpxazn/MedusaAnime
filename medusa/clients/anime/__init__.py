@@ -115,11 +115,13 @@ class AnimeSource(ABC):
     RATE_LIMIT: int = 10  # requests per second
     
     @abstractmethod
-    def search(self, query: str) -> List[AnimeSeries]:
+    def search(self, query: str, include_details: bool = False, limit: Optional[int] = None) -> List[AnimeSeries]:
         """Search for anime by title.
         
         Args:
             query: Search query string
+            include_details: Whether to request enriched metadata when supported
+            limit: Optional maximum number of results to return
             
         Returns:
             List of matching AnimeSeries objects

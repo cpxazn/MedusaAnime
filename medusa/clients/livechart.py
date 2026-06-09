@@ -63,11 +63,13 @@ class LiveChartClient(AnimeSource):
             log.warning('LiveChart request failed for {url}: {error!r}', url=url, error=error)
             return None
 
-    def search(self, query: str) -> List[AnimeSeries]:
+    def search(self, query: str, include_details: bool = False, limit: Optional[int] = None) -> List[AnimeSeries]:
         """Search for anime by title.
         
         Args:
             query: Search query string
+            include_details: Whether to request enriched metadata when supported; LiveChart search cards are already enriched
+            limit: Optional maximum number of results to return
             
         Returns:
             List of matching AnimeSeries objects
@@ -111,6 +113,8 @@ class LiveChartClient(AnimeSource):
             if anime and anime.anime_id not in seen and matches_query(anime):
                 seen.add(anime.anime_id)
                 results.append(anime)
+                if limit and len(results) >= limit:
+                    break
 
         return results
 
