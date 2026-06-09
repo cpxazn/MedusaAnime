@@ -33,7 +33,7 @@ class AnimeHandler(BaseRequestHandler):
     #: resource name
     name = 'anime'
     #: identifier
-    identifier = ('identifier', r'\w+')
+    identifier = ('identifier', r'[\w-]+')
     #: path param
     path_param = ('path_param', r'\w+')
     #: allowed HTTP methods
@@ -58,6 +58,9 @@ class AnimeHandler(BaseRequestHandler):
             source = self.get_argument('source', default='myanimelist')
             year = self._parse(self.get_argument('year', default=None))
             season = self.get_argument('season', default=None)
+            include_details = self._parse_boolean(self.get_argument('includeDetails', default=False))
+            fields = self._parse_fields(self.get_argument('fields', default=None))
+            limit = self._get_limit(default=20)
 
             if not query:
                 return self._bad_request('Search query parameter "q" is required')
@@ -67,7 +70,7 @@ class AnimeHandler(BaseRequestHandler):
                 return self._bad_request('Invalid source. Use: livechart, myanimelist')
 
             try:
-                results = client.search(query)
+                results = client.search(query, include_details=include_details or bool(fields), limit=limit)
             except Exception as error:
                 log.warning('Search failed: {error}', error=error)
                 return self._internal_server_error(str(error))
@@ -83,9 +86,9 @@ class AnimeHandler(BaseRequestHandler):
                         'slug': show.identifier.slug,
                         'title': show.title,
                     }
-                data.append(anime_data)
+                data.append(self._project_fields(anime_data, fields))
 
-            return self._paginate(data, sort='-year')
+            return self._paginate(data, sort='-year' if not fields or 'year' in fields else None)
 
         elif identifier == 'seasonal':
             # Get seasonal anime
@@ -93,6 +96,18 @@ class AnimeHandler(BaseRequestHandler):
             season = self.get_argument('season', default=None)
             source = self.get_argument('source', default='myanimelist')
             source_sort = self.get_argument('sourceSort', default='anime_num_list_users')
+            anime_types = self._parse_fields(self.get_argument('animeType', default=None))
+            min_num_list_users = self._parse(self.get_argument('minNumListUsers', default=None))
+            include_genres = self._parse_fields(self.get_argument('includeGenres', default=None))
+            exclude_genres = self._parse_fields(self.get_argument('excludeGenres', default=None))
+            matched = self.get_argument('matched', default=None)
+            matched = None if matched is None else self._parse_boolean(matched)
+            fields = self._parse_fields(self.get_argument('fields', default=None))
+            first_season_only = self._parse_boolean(self.get_argument('firstSeasonOnly', default=False))
+            filtered_response = any([
+                anime_types, min_num_list_users is not None, include_genres, exclude_genres,
+                matched is not None, fields, first_season_only,
+            ])
 
             if not year:
                 return self._bad_request('Year parameter is required for seasonal queries')
@@ -112,7 +127,32 @@ class AnimeHandler(BaseRequestHandler):
                 log.warning('Seasonal fetch failed: {error}', error=error)
                 return self._internal_server_error(str(error))
 
-            data = [self._anime_to_json(anime) for anime in results]
+            data = []
+            for anime in results:
+                anime_data = self._anime_to_json(anime)
+                if filtered_response:
+                    show = match_anime_to_show(anime)
+                    anime_data['matched'] = show is not None
+                    if show:
+                        anime_data['match'] = {
+                            'slug': show.identifier.slug,
+                            'title': show.title,
+                        }
+                data.append(anime_data)
+
+            if filtered_response:
+                data = self._filter_seasonal(
+                    data,
+                    anime_types=anime_types,
+                    min_num_list_users=min_num_list_users,
+                    include_genres=include_genres,
+                    exclude_genres=exclude_genres,
+                    matched=matched,
+                    first_season_only=first_season_only,
+                )
+                data = [self._project_fields(anime, fields) for anime in data]
+                return self._paginated_object(data)
+
             return self._paginate(data)
 
         elif identifier == 'upcoming':
@@ -211,15 +251,86 @@ class AnimeHandler(BaseRequestHandler):
         Args:
             identifier: Should be 'add' to add an anime
         """
-        if identifier != 'add':
-            return self._bad_request('Invalid identifier. Use: add')
+        if identifier not in ('add', 'bulk-add'):
+            return self._bad_request('Invalid identifier. Use: add, bulk-add')
 
         data = json_decode(self.request.body)
         if not data:
             return self._bad_request('Request body is required')
 
-        # Extract anime data
+        if identifier == 'bulk-add':
+            return self._bulk_add(data)
+
+        result = self._add_anime_item(data)
+        if result['success']:
+            return self._created(data=result.get('queueItem'))
+        if result['status'] == 404:
+            return self._not_found(result['error'])
+        if result['status'] == 409:
+            return self._conflict(result['error'])
+        if result['status'] >= 500:
+            return self._internal_server_error(result['error'])
+        return self._bad_request(result['error'])
+
+    def _bulk_add(self, data):
+        """Add or validate multiple anime items, returning per-item results."""
+        defaults = data.get('defaults') or {}
+        items = data.get('items') or []
+        dry_run = self._parse_boolean(data.get('dry_run', False))
+        verify = self._parse_boolean(data.get('verify', False))
+
+        if not isinstance(defaults, dict):
+            return self._bad_request('defaults must be an object')
+        if not isinstance(items, list) or not items:
+            return self._bad_request('items must be a non-empty list')
+
+        results = []
+        for item in items:
+            if not isinstance(item, dict):
+                results.append({
+                    'animeId': None,
+                    'success': False,
+                    'action': 'invalid',
+                    'matched': False,
+                    'error': 'Bulk add item must be an object.',
+                })
+                continue
+
+            item_data = defaults.copy()
+            item_data.update(item)
+            try:
+                results.append(self._add_anime_item(item_data, dry_run=dry_run, verify=verify))
+            except Exception as error:
+                log.warning('Bulk anime add item failed unexpectedly: {error}', error=error)
+                results.append({
+                    'animeId': item_data.get('anime_id'),
+                    'success': False,
+                    'action': 'error',
+                    'matched': False,
+                    'error': str(error),
+                })
+
+        successes = len([result for result in results if result.get('success')])
+        response = {
+            'dryRun': dry_run,
+            'requested': len(items),
+            'successes': successes,
+            'failures': len(items) - successes,
+            'results': [self._clean_bulk_result(result) for result in results],
+        }
+        return self._ok(response)
+
+    def _add_anime_item(self, data, dry_run=False, verify=False):
+        """Validate and optionally queue one anime add request."""
         anime_id = data.get('anime_id')
+        result = {
+            'animeId': anime_id,
+            'success': False,
+            'action': 'invalid',
+            'matched': False,
+            'status': 400,
+        }
+
         source = data.get('source', 'myanimelist')
         root_dir = data.get('root_dir')
         anime_option = data.get('anime', True)
@@ -228,58 +339,61 @@ class AnimeHandler(BaseRequestHandler):
         blacklist = data.get('blacklist', [])
         initial_release_group = data.get('initial_release_group')
         fallback_release_groups = data.get('fallback_release_groups')
-        release_group_fallback_days = self._parse(data.get('release_group_fallback_days'), int)
+        release_group_fallback_days = self._parse_optional_int(data.get('release_group_fallback_days'))
+
+        if release_group_fallback_days is False:
+            return self._item_error(result, 'Invalid release_group_fallback_days')
 
         if not anime_id:
-            return self._bad_request('anime_id is required')
+            return self._item_error(result, 'anime_id is required')
 
-        # Get the client and fetch anime details
         client = self._get_client(source)
         if not client:
-            return self._bad_request('Invalid source. Use: livechart, myanimelist')
+            return self._item_error(result, 'Invalid source. Use: livechart, myanimelist')
 
         try:
             anime_obj = client.get_details(anime_id)
         except Exception as error:
             log.warning('Details fetch failed: {error}', error=error)
-            return self._internal_server_error(str(error))
+            return self._item_error(result, str(error), action='error', status=500)
 
         if not anime_obj.anime_id:
-            return self._not_found('Anime not found')
+            return self._item_error(result, 'Anime not found', action='not_found', status=404)
 
-        # Check if already in library
+        result['animeId'] = anime_obj.anime_id
+        result['displayTitle'] = anime_obj.display_title
+
         existing_show = match_anime_to_show(anime_obj)
         if existing_show:
-            return self._conflict('Anime already exists in library: {0}'.format(existing_show.title))
+            result.update({
+                'action': 'already_exists',
+                'matched': True,
+                'match': {
+                    'slug': existing_show.identifier.slug,
+                    'title': existing_show.title,
+                } if getattr(existing_show, 'identifier', None) else {'title': existing_show.title},
+                'status': 409,
+                'error': 'Anime already exists in library: {0}'.format(existing_show.title),
+            })
+            return result
 
-        # Generate the full show directory path. QueueItemAdd treats show_dir as a full path,
-        # so join relative directory names to root_dir before queuing the add.
         dir_name = data.get('directory_name', None) or anime_obj.directory_name
         show_dir = dir_name
         if dir_name and root_dir and not os.path.isabs(dir_name):
             show_dir = os.path.join(root_dir, dir_name)
 
-        # Build the identifier for the show queue. The show queue expects a real Medusa
-        # indexer ID; AniDB is only used as a bridge to TVDB and is not queued directly.
         if not anime_obj.anidb_id:
-            return self._bad_request('Could not resolve AniDB ID for this anime')
+            return self._item_error(result, 'Could not resolve indexer ID for this anime')
 
         tvdb_id = self._resolve_tvdb_id(anime_obj)
         if not tvdb_id:
-            return self._bad_request(
-                'Could not map AniDB ID {0} to a TVDB ID'.format(anime_obj.anidb_id)
-            )
-
-        indexer_id = INDEXER_TVDBV2
-        indexer_value = tvdb_id
+            return self._item_error(result, 'Could not map AniDB ID {0} to a TVDB ID'.format(anime_obj.anidb_id))
 
         default_status = self._parse_episode_status(data.get('status', 'wanted'))
         if default_status is None:
-            return self._bad_request('Invalid status')
+            return self._item_error(result, 'Invalid status')
 
         default_status_after = self._parse_episode_status(data.get('status_after'))
-
-        # Build options
         options = {
             'default_status': default_status,
             'quality': data.get('quality', {'preferred': [], 'allowed': []}),
@@ -301,7 +415,6 @@ class AnimeHandler(BaseRequestHandler):
 
         preferred_groups = fallback_release_groups or release_groups or whitelist or list(app.PREFERRED_ANIME_RELEASE_GROUPS) or ['SubsPlease']
         preferred_groups = [group for group in preferred_groups if group]
-
         active_group = initial_release_group or (preferred_groups[0] if preferred_groups else None)
         if active_group:
             preferred_groups = [group for group in preferred_groups if group.lower() != active_group.lower()]
@@ -312,15 +425,58 @@ class AnimeHandler(BaseRequestHandler):
         options['anime_release_group_fallback_days'] = release_group_fallback_days
         options['anime_release_group_last_switch'] = None
 
+        result.update({
+            'success': True,
+            'action': 'would_add' if dry_run else 'added',
+            'status': 200 if dry_run else 201,
+            'matched': False,
+            'message': 'Dry-run validation passed.' if dry_run else 'Anime queued for add.',
+        })
+
+        if dry_run:
+            return result
+
         try:
             queue_item_obj = app.show_queue_scheduler.action.addShow(
-                indexer_id, indexer_value, show_dir, **options
+                INDEXER_TVDBV2, tvdb_id, show_dir, **options
             )
         except Exception as error:
             log.warning('Failed to add anime to queue: {error}', error=error)
-            return self._internal_server_error(str(error))
+            return self._item_error(result, str(error), action='error', status=500)
 
-        return self._created(data=queue_item_obj.to_json)
+        result['queueItem'] = queue_item_obj.to_json
+        if verify:
+            result['matched'] = match_anime_to_show(anime_obj) is not None
+        return result
+
+    @staticmethod
+    def _parse_optional_int(value):
+        """Parse an optional integer without raising, for per-item bulk errors."""
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _item_error(result, error, action='invalid', status=400):
+        """Update a per-item result with an error."""
+        result.update({
+            'success': False,
+            'action': action,
+            'status': status,
+            'error': error,
+        })
+        return result
+
+    @staticmethod
+    def _clean_bulk_result(result):
+        """Remove internal response fields from bulk add item results."""
+        cleaned = result.copy()
+        cleaned.pop('status', None)
+        cleaned.pop('queueItem', None)
+        return cleaned
 
     @staticmethod
     def _parse_episode_status(status):
@@ -442,6 +598,104 @@ class AnimeHandler(BaseRequestHandler):
         if client_class:
             return client_class()
         return None
+
+    def _paginated_object(self, data):
+        """Return object-shaped pagination metadata for filtered seasonal responses."""
+        page = self._get_page()
+        limit = self._get_limit()
+        total = len(data)
+        start = (page - 1) * limit
+        end = start + limit
+
+        return self._ok(data={
+            'items': data[start:end],
+            'page': page,
+            'limit': limit,
+            'total': total,
+            'hasNextPage': end < total,
+        })
+
+    @classmethod
+    def _filter_seasonal(cls, data, anime_types=None, min_num_list_users=None, include_genres=None,
+                         exclude_genres=None, matched=None, first_season_only=False):
+        """Filter seasonal anime response dictionaries before pagination."""
+        anime_types = cls._normalize_filter_values(anime_types)
+        include_genres = cls._normalize_filter_values(include_genres)
+        exclude_genres = cls._normalize_filter_values(exclude_genres)
+        filtered = []
+
+        for anime in data:
+            if anime_types and cls._normalize_value(anime.get('animeType')) not in anime_types:
+                continue
+
+            num_list_users = anime.get('numListUsers')
+            if min_num_list_users is not None and (num_list_users is None or num_list_users < min_num_list_users):
+                continue
+
+            genres = cls._normalize_filter_values(anime.get('genres') or [])
+            if include_genres and not include_genres.intersection(genres):
+                continue
+            if exclude_genres and exclude_genres.intersection(genres):
+                continue
+
+            if matched is not None and anime.get('matched') is not matched:
+                continue
+
+            if first_season_only and cls._is_likely_later_season(anime):
+                continue
+
+            filtered.append(anime)
+
+        return filtered
+
+    @classmethod
+    def _is_likely_later_season(cls, anime):
+        """Heuristic to exclude sequels and continuations from seasonal results."""
+        haystack = ' '.join(filter(None, [
+            anime.get('displayTitle'),
+            anime.get('titleEnglish'),
+            anime.get('titleRomanji'),
+            anime.get('synopsis'),
+        ])).lower()
+
+        patterns = (
+            r'\b(second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth) season\b',
+            r'\bseason\s*[2-9]\b',
+            r'\bs[2-9]\b',
+            r'\bpart\s*[2-9]\b',
+            r'\b(sequel|continuation) to\b',
+            r'\b(final|second|third) part of\b',
+        )
+        return any(re.search(pattern, haystack) for pattern in patterns)
+
+    @staticmethod
+    def _normalize_filter_values(values):
+        """Normalize string/list filter values for case-insensitive comparisons."""
+        if not values:
+            return set()
+        return {AnimeHandler._normalize_value(value) for value in values if value is not None}
+
+    @staticmethod
+    def _normalize_value(value):
+        """Normalize a scalar value for case-insensitive comparisons."""
+        return str(value).strip().lower()
+
+    @staticmethod
+    def _parse_fields(fields):
+        """Parse a comma-separated field projection list."""
+        if not fields:
+            return None
+
+        parsed = [field.strip() for field in fields.split(',') if field.strip()]
+        return parsed or None
+
+    @staticmethod
+    def _project_fields(data, fields):
+        """Return only requested response fields when a projection is supplied."""
+        if not fields:
+            return data
+
+        return {field: data.get(field) for field in fields}
 
     def _anime_to_json(self, anime: AnimeSeries) -> dict:
         """Convert AnimeSeries to JSON-serializable dict.

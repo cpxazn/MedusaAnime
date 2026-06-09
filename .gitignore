@@ -108,4 +108,4 @@ xo-errors.log
 yarn-error.log
 
 graphify-out/
-graphify_*.bat
+graphify*.bat
