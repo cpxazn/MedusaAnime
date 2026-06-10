@@ -4,12 +4,13 @@
 
 from __future__ import unicode_literals
 
+import gzip
+import io
 import logging
+import os
 import time
 from collections import defaultdict, namedtuple
 from os.path import join
-
-import adba
 
 from medusa import app, db
 from medusa.helpers import sanitize_scene_name
@@ -419,40 +420,158 @@ def _get_xem_exceptions(force):
 
 
 def _get_anidb_exceptions(force):
+    """
+    Fetch scene exceptions from AniDB's daily anime-titles dump.
+
+    Downloads and extracts http://anidb.net/api/anime-titles.dat.gz, respecting
+    a 24-hour cooldown to avoid rate-limit bans. Parses the pipe-delimited DAT
+    format (aid|type|language|title) and extracts English synonyms (type 2)
+    and short titles (type 3) for every anime show in the library that has
+    a stored AniDB ID.
+
+    The AniDB ID is stored per-series as an external mapping:
+        series.externals['anidb_id']  (EXTERNAL_ANIDB = 11)
+    """
     anidb_exceptions = defaultdict(dict)
-    # AniDB exceptions use TVDB as indexer
     exceptions = anidb_exceptions[INDEXER_TVDBV2]
 
-    if force or should_refresh('anidb'):
-        logger.info('Checking for scene exceptions updates from AniDB')
+    if not force and not should_refresh('anidb'):
+        return anidb_exceptions
 
-        for show in app.showList:
-            if all([show.name, show.is_anime, show.indexer == INDEXER_TVDBV2]):
-                try:
-                    anime = adba.Anime(
-                        None,
-                        name=show.name,
-                        tvdbid=show.indexerid,
-                        autoCorrectName=True,
-                        cache_path=join(app.CACHE_DIR, 'adba')
-                    )
-                except ValueError as error:
-                    logger.debug(
-                        "Couldn't update scene exceptions for {show},"
-                        " AniDB doesn't have this show. Error: {msg}", {'show': show.name, 'msg': error}
-                    )
-                    continue
-                except Exception as error:
-                    logger.error(
-                        'Checking AniDB scene exceptions update failed'
-                        ' for {show}. Error: {msg}', {'show': show.name, 'msg': error}
-                    )
-                    continue
+    logger.info('Checking for scene exceptions updates from AniDB')
 
-                if anime and anime.name != show.name:
-                    series_id = int(show.series_id)
-                    exceptions[series_id] = [{anime.name: -1}]
+    # 1. Download and parse the DAT dump: {anidb_id: [english titles]}
+    aid_to_titles = _parse_anidb_titles_dump()
+    if not aid_to_titles:
+        logger.warning('AniDB titles dump was empty or could not be parsed')
+        return anidb_exceptions
 
-        set_last_refresh('anidb')
+    # 2. Walk all anime shows in the library and attach exceptions.
+    for show in app.showList:
+        if not all([show.is_anime, show.indexer == INDEXER_TVDBV2]):
+            continue
 
+        anidb_id = show.externals.get('anidb_id')
+        if not anidb_id:
+            continue
+
+        # Ensure aid is an int for dict lookup against the parsed DAT data.
+        try:
+            aid = int(anidb_id)
+        except (ValueError, TypeError):
+            continue
+
+        titles = aid_to_titles.get(aid)
+        if not titles:
+            continue
+
+        tvdb_id = int(show.series_id)
+        # Build exception list: each entry is {title: season}, -1 = series-level
+        exception_list = [{title: -1} for title in titles]
+        exceptions[tvdb_id] = exception_list
+
+    set_last_refresh('anidb')
     return anidb_exceptions
+
+
+def _parse_anidb_titles_dump():
+    """
+    Download (if needed) and parse the AniDB anime-titles.dat.gz dump.
+
+    Returns a dict: {anidb_id: set of English synonym/short titles}
+
+    The DAT format is: <aid>|<type>|<language>|<title>
+    Types: 1=primary, 2=synonyms, 3=short titles, 4=official titles
+    We only care about types 2 (synonyms) and 3 (short) in language 'en'.
+    """
+    cache_dir = join(app.CACHE_DIR, 'anidb')
+    os.makedirs(cache_dir, exist_ok=True)
+    dat_path = join(cache_dir, 'anime-titles.dat')
+
+    # Download the gz file if the dat file is missing or older than 24h.
+    if _should_download_anidb_dump(dat_path):
+        if not _download_anidb_titles_dat(dat_path):
+            return {}
+
+    # Parse the DAT file line by line.
+    aid_to_titles = {}
+    try:
+        with io.open(dat_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
+                    continue
+                # Split into exactly 4 parts: aid|type|language|title
+                parts = line.split('|', 3)
+                if len(parts) != 4:
+                    continue
+                aid, type_str, language, title = parts
+                aid = int(aid)
+                # Only English synonyms (2) and short titles (3)
+                if language != 'en' or type_str not in ('2', '3'):
+                    continue
+                aid_to_titles.setdefault(aid, set()).add(title)
+    except Exception as error:
+        logger.error('AniDB titles DAT parse failed: {error}', {'error': error})
+        return {}
+
+    # Convert sets to lists for JSON-serializable output.
+    return {aid: list(titles) for aid, titles in aid_to_titles.items()}
+
+
+def _should_download_anidb_dump(dat_path):
+    """
+    Check whether the AniDB dump needs re-downloading.
+
+    AniDB restricts downloads to once per 24 hours to prevent abuse.
+    If the local dat file exists and is less than 24h old, skip download.
+    """
+    if not os.path.isfile(dat_path):
+        return True
+    try:
+        mtime = os.path.getmtime(dat_path)
+        return (time.time() - mtime) > 86400  # 24 hours
+    except OSError:
+        return True
+
+
+def _download_anidb_titles_dat(dat_path):
+    """
+    Download and extract the AniDB anime-titles.dat.gz dump.
+
+    Returns True if successful, False otherwise.
+    """
+    url = 'http://anidb.net/api/anime-titles.dat.gz'
+    gz_path = dat_path + '.gz'
+
+    try:
+        logger.info('Downloading AniDB anime titles dump from {url}', {'url': url})
+        response = safe_session.get(url, timeout=120, stream=True)
+        response.raise_for_status()
+
+        # Write gz file first, then extract to dat.
+        with open(gz_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+        # Extract gz to dat.
+        with gzip.open(gz_path, 'rb') as gz_file:
+            with open(dat_path, 'wb') as out_file:
+                out_file.write(gz_file.read())
+
+        # Remove gz file.
+        os.remove(gz_path)
+        logger.info('AniDB titles dump extracted successfully')
+        return True
+    except Exception as error:
+        logger.error('AniDB titles download failed: {error}', {'error': error})
+        # Clean up partial files.
+        for path in (gz_path, dat_path):
+            if os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        return False

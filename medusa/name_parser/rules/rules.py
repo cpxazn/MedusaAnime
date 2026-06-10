@@ -118,35 +118,69 @@ class FixAnimeReleaseGroup(Rule):
         for filepart in marker_sorted(fileparts, matches):
             # get the group (e.g.: [abc]) at the beginning of this filepart
             group = matches.markers.at_index(filepart.start, index=0, predicate=lambda marker: marker.name == 'group')
-            if not group or matches.at_match(group):
+
+            # Only skip if there is a release_group at this position AND it already matches the group value.
+            # Don't skip just because some other match (subtitle_language, etc.) overlaps.
+            if not group and not matches.named('release_group'):
                 continue
+            if group:
+                rg_at = [m for m in matches.at_match(group) if m.name == 'release_group']
+                if rg_at and cleanup(group.value) == str(rg_at[0].value):
+                    continue
 
             # don't use websites as release group
             websites = matches.named('website')
             if websites and any(ws for ws in websites if ws.value in group.value):
                 continue
 
-            if (not matches.tagged('anime') and not matches.named('video_profile') and
-                    matches.named('season') and matches.named('episode')):
-                continue
-
-            groups = matches.range(filepart.start, filepart.end, predicate=lambda match: match.name == 'release_group')
+            groups = list(matches.range(filepart.start, filepart.end, predicate=lambda match: match.name == 'release_group'))
             if not groups:
                 continue
 
             to_remove = []
             to_append = []
             if group:
+                # [Group] prefix: replace all release_groups with the bracketed group value
                 to_remove.extend(groups)
                 rg = copy.copy(groups[0])
                 rg.start = group.start
                 rg.end = group.end
-                rg.value = cleanup(group.value)
+                # Strip brackets but preserve dots (cleanup() converts . to space)
+                rg.value = str(group.value).strip('[](){}').strip()
                 rg.tags = ['anime']
                 to_append.append(rg)
             else:
-                # anime should pick the first in the list and discard the rest
-                to_remove.append(groups[1:])
+                # -GroupName suffix: pick the first, extend it with hyphenated segments,
+                # and remove any others that may have been split from the same name
+                primary = groups[0]
+                # raw_start/raw_end cover the actual matched text which may include
+                # hyphenated segments beyond the captured value (e.g. Tsundere-Raws
+                # where value="Tsundere" but raw_span covers the full group name).
+                raw_text = matches.input_string[primary.raw_start:primary.raw_end]
+                after_match = matches.input_string[primary.raw_end:]
+                # Check for -Word pattern in the text after the raw match
+                suffix_match = re.match(r'-([A-Za-z]+(?:-[A-Za-z]+)*)', after_match)
+                if suffix_match:
+                    full_value = raw_text + suffix_match.group(0)
+                elif '-' in raw_text:
+                    # The raw span already includes the full hyphenated group name
+                    full_value = raw_text
+                else:
+                    full_value = str(primary.value)
+
+                if full_value != str(primary.value):
+                    to_remove.extend(groups)
+                    rg = copy.copy(primary)
+                    rg.value = full_value
+                    rg.start = primary.raw_start
+                    rg.end = primary.raw_start + len(full_value)
+                    rg.tags = ['anime']
+                    to_append.append(rg)
+                else:
+                    # Value is already correct. Tag as anime so ReleaseGroupPostProcessor
+                    # doesn't strip hyphens/dots from it, then discard any extra groups.
+                    primary.tags.append('anime')
+                    to_remove.extend(groups[1:])
 
             return to_remove, to_append
 
@@ -1964,6 +1998,11 @@ class ReleaseGroupPostProcessor(Rule):
         to_remove = []
         to_append = []
         for release_group in release_groups:
+            # Skip anime release groups — they were intentionally set by FixAnimeReleaseGroup
+            # and contain valid dots (e.g. "Kakumei.Subs") or hyphens that should be preserved.
+            if 'anime' in release_group.tags:
+                continue
+
             value = release_group.value
             for regex in self.regexes:
                 value = regex.sub(' ', value).strip()
