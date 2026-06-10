@@ -242,7 +242,8 @@ class Cache(object):
 
                 for index, item in enumerate(data['entries'] or []):
                     try:
-                        parsed_result = NameParser().parse(item['title'])
+                        parse_method = 'anime' if self.provider.anime_only else None
+                        parsed_result = NameParser(parse_method=parse_method).parse(item['title'])
                     except (InvalidNameException, InvalidShowException) as error:
                         log.debug('{0}', error)
                         continue
@@ -398,7 +399,8 @@ class Cache(object):
         """Add item into cache database."""
         if parsed_result is None:
             try:
-                parsed_result = NameParser().parse(search_result.name)
+                parse_method = 'anime' if self.provider.anime_only else None
+                parsed_result = NameParser(parse_method=parse_method).parse(search_result.name)
             except (InvalidNameException, InvalidShowException) as error:
                 log.debug('{0}', error)
                 return None

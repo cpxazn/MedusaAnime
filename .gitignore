@@ -109,3 +109,5 @@ yarn-error.log
 
 graphify-out/
 graphify*.bat
+AGENTS.md
+feature.md
