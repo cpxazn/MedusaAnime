@@ -225,8 +225,12 @@ class BaseRequestHandler(RequestHandler):
 
     @classmethod
     def _create_base_url(cls, prefix_url, resource_name, *args):
-        elements = [prefix_url, resource_name] + \
-                   [r'(?P<{key}>{value})'.format(key=key, value=value) for (key, value) in args]
+        elements = [prefix_url, resource_name]
+        for arg in args:
+            if not arg:
+                continue
+            key, value = arg
+            elements.append(r'(?P<{key}>{value})'.format(key=key, value=value))
         return '/'.join(elements)
 
     @classmethod

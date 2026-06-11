@@ -40,6 +40,7 @@ from medusa.server.api.v2.series import SeriesHandler
 from medusa.server.api.v2.series_asset import SeriesAssetHandler
 from medusa.server.api.v2.series_change_indexer import SeriesChangeIndexer
 from medusa.server.api.v2.series_legacy import SeriesLegacyHandler
+from medusa.server.api.v2.series_release import SeriesReleaseHandler
 from medusa.server.api.v2.series_mass_edit import SeriesMassEdit
 from medusa.server.api.v2.series_mass_operation import SeriesMassOperation
 from medusa.server.api.v2.series_operation import SeriesOperationHandler
@@ -133,6 +134,8 @@ def get_apiv2_handlers(base):
         SeriesAssetHandler.create_app_handler(base),
         # /api/v2/series/tvdb1234/legacy
         SeriesLegacyHandler.create_app_handler(base),  # To be removed
+        # /api/v2/series/tvdb1234/release
+        SeriesReleaseHandler.create_app_handler(base),
         # /api/v2/series/tvdb1234
         SeriesHandler.create_app_handler(base),
 
