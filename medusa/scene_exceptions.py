@@ -423,7 +423,7 @@ def _get_anidb_exceptions(force):
     """
     Fetch scene exceptions from AniDB's daily anime-titles dump.
 
-    Downloads and extracts http://anidb.net/api/anime-titles.dat.gz, respecting
+    Downloads and extracts https://anidb.net/api/anime-titles.dat.gz, respecting
     a 24-hour cooldown to avoid rate-limit bans. Parses the pipe-delimited DAT
     format (aid|type|language|title) and extracts English synonyms (type 2)
     and short titles (type 3) for every anime show in the library that has
@@ -542,7 +542,7 @@ def _download_anidb_titles_dat(dat_path):
 
     Returns True if successful, False otherwise.
     """
-    url = 'http://anidb.net/api/anime-titles.dat.gz'
+    url = 'https://anidb.net/api/anime-titles.dat.gz'
     gz_path = dat_path + '.gz'
 
     try:
