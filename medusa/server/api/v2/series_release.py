@@ -152,14 +152,20 @@ class SeriesReleaseHandler(BaseRequestHandler):
             key = (rg, quality_num)
 
             if key not in aggregated:
-                quality_names = Quality.split_quality(quality_num)
+                allowed_ints, _preferred_ints = Quality.split_quality(quality_num)
+                primary_quality = (
+                    Quality.qualityStrings.get(allowed_ints[0], 'Unknown')
+                    if allowed_ints
+                    else Quality.qualityStrings.get(quality_num, 'Unknown')
+                )
                 aggregated[key] = {
                     'releaseGroup': rg,
                     'quality': quality_num,
-                    'qualityName': (
-                        quality_names[0] if quality_names
-                        else Quality.qualityStrings.get(quality_num, 'Unknown')
-                    ),
+                    'qualityName': primary_quality,
+                    'qualityNames': [
+                        Quality.qualityStrings.get(q, 'Unknown')
+                        for q in allowed_ints
+                    ],
                     'count': 0,
                     'providers': set(),
                 }
@@ -324,14 +330,20 @@ class SeriesReleaseHandler(BaseRequestHandler):
             key = (rg, quality_num)
 
             if key not in aggregated:
-                quality_names = Quality.split_quality(quality_num)
+                allowed_ints, _preferred_ints = Quality.split_quality(quality_num)
+                primary_quality = (
+                    Quality.qualityStrings.get(allowed_ints[0], 'Unknown')
+                    if allowed_ints
+                    else Quality.qualityStrings.get(quality_num, 'Unknown')
+                )
                 aggregated[key] = {
                     'releaseGroup': rg,
                     'quality': quality_num,
-                    'qualityName': (
-                        quality_names[0] if quality_names
-                        else Quality.qualityStrings.get(quality_num, 'Unknown')
-                    ),
+                    'qualityName': primary_quality,
+                    'qualityNames': [
+                        Quality.qualityStrings.get(q, 'Unknown')
+                        for q in allowed_ints
+                    ],
                     'count': 0,
                     'providers': set(),
                 }
