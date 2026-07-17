@@ -4,7 +4,7 @@ from __future__ import unicode_literals
 
 import logging
 
-from medusa import app, db, notifiers, ui
+from medusa import app, db, notifiers, ui, ws
 from medusa.helper.exceptions import ShowDirectoryNotFoundException
 from medusa.logger.adapters.style import BraceAdapter
 from medusa.server.api.v2.base import BaseRequestHandler
@@ -131,6 +131,146 @@ class SeriesOperationHandler(BaseRequestHandler):
 
                 root_ep_obj.rename()
             return self._created()
+
+        if data['type'] == 'ORGANIZE_SEASON_FOLDERS':
+            """Move episodes into season subdirectories without renaming files.
+
+            Enables seasonFolders on the series (if not already enabled) and
+            moves all downloaded episode files into Season XX/ subdirectories,
+            preserving the original filenames. Also moves associated files
+            (subtitles, etc.).
+
+            Plex struggles with multi-season anime in flat directories.
+            Organizing into season subdirs fixes Plex detection issues.
+            """
+            import os
+            import shutil
+
+            from medusa import helpers
+            from medusa.post_processor import PostProcessor
+
+            try:
+                series.validate_location  # @UnusedVariable
+            except ShowDirectoryNotFoundException:
+                return self._bad_request("Can't organize season folders when the show dir is missing.")
+
+            # Enable season folders if not already set
+            if not series.season_folders:
+                series.season_folders = True
+                series.save_to_db()
+                log.info('Enabled season folders for {series}', {'series': series.name})
+
+            show_dir = series.location
+            main_db_con = db.DBConnection()
+
+            # Get all episodes with file locations
+            all_episodes = [ep for ep in series.get_all_episodes(has_location=True) if ep.location]
+
+            # Deduplicate by location (related episodes share the same file)
+            seen_locations: set[str] = set()
+            unique_episodes: list[Episode] = []
+            for ep_obj in all_episodes:
+                if ep_obj.location not in seen_locations:
+                    seen_locations.add(ep_obj.location)
+                    unique_episodes.append(ep_obj)
+
+            moved: list[dict[str, str]] = []
+            errors: list[dict[str, str]] = []
+
+            for ep_obj in unique_episodes:
+                old_path = ep_obj.location
+                if not os.path.isfile(old_path):
+                    errors.append({
+                        'episode': f's{ep_obj.season:02d}e{ep_obj.episode:02d}',
+                        'error': f'File not found: {old_path}',
+                    })
+                    continue
+
+                # Determine target directory and path
+                season_dir = os.path.join(show_dir, f'Season {ep_obj.season:02d}')
+                filename = os.path.basename(old_path)
+                new_path = os.path.join(season_dir, filename)
+
+                # Already in the right place?
+                if old_path == new_path:
+                    continue
+
+                try:
+                    # Create season directory if needed
+                    helpers.make_dirs(season_dir)
+
+                    # Find related episodes (same location, different episode numbers)
+                    related_eps_result = main_db_con.select(
+                        'SELECT season, episode '
+                        'FROM tv_episodes '
+                        'WHERE location = ? AND episode != ? '
+                        'AND indexer = ? AND showid = ?',
+                        [old_path, ep_obj.episode, series.indexer, series.series_id]
+                    )
+                    related_eps: list[Episode] = []
+                    for rel in related_eps_result:
+                        rel_ep = series.get_episode(rel['season'], rel['episode'])
+                        if rel_ep and rel_ep not in related_eps:
+                            related_eps.append(rel_ep)
+
+                    # Move associated files (subtitles, etc.)
+                    associated_files = PostProcessor(old_path).list_associated_files(
+                        old_path, subfolders=True
+                    )
+                    for assoc_file in associated_files:
+                        assoc_filename = os.path.basename(assoc_file)
+                        assoc_new_path = os.path.join(season_dir, assoc_filename)
+                        if assoc_file != assoc_new_path and os.path.isfile(assoc_file):
+                            helpers.make_dirs(season_dir)
+                            shutil.move(assoc_file, assoc_new_path)
+                            log.debug(
+                                'Moved associated file {old} -> {new}',
+                                {'old': assoc_file, 'new': assoc_new_path}
+                            )
+
+                    # Move the main episode file
+                    shutil.move(old_path, new_path)
+                    log.info(
+                        'Organized {ep} {old} -> {new}',
+                        {'ep': ep_obj.pretty_name(), 'old': old_path, 'new': new_path}
+                    )
+
+                    # Update location for this episode and related episodes in DB
+                    ep_obj.location = new_path
+                    for rel_ep in related_eps:
+                        rel_ep.location = new_path
+
+                    # Save all updated locations to DB
+                    sql_l = [ep_obj.get_sql()]
+                    for rel_ep in related_eps:
+                        sql_l.append(rel_ep.get_sql())
+                    main_db_con.mass_action(sql_l)
+
+                    moved.append({
+                        'episode': f's{ep_obj.season:02d}e{ep_obj.episode:02d}',
+                        'from': old_path,
+                        'to': new_path,
+                    })
+
+                except (OSError, IOError) as error:
+                    log.error(
+                        'Failed to move {old} -> {new}: {error!r}',
+                        {'old': old_path, 'new': new_path, 'error': error}
+                    )
+                    errors.append({
+                        'episode': f's{ep_obj.season:02d}e{ep_obj.episode:02d}',
+                        'error': str(error),
+                    })
+
+            # Push WebSocket update
+            msg = ws.Message('showUpdated', series.to_json(detailed=False))
+            msg.push()
+
+            return self._ok(data={
+                'seasonFoldersEnabled': True,
+                'moved': moved,
+                'errors': errors,
+            })
 
         # This might also be moved to /notifications/kodi/update?showslug=..
         if data['type'] == 'UPDATE_KODI':
