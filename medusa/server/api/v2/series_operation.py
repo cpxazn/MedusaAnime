@@ -166,13 +166,17 @@ class SeriesOperationHandler(BaseRequestHandler):
             # Get all episodes with file locations
             all_episodes = [ep for ep in series.get_all_episodes(has_location=True) if ep.location]
 
-            # Deduplicate by location (related episodes share the same file)
-            seen_locations: set[str] = set()
-            unique_episodes: list[Episode] = []
+            # Deduplicate by location (related episodes share the same file).
+            # When multiple episode records point to the same file (common in flat
+            # directories where S2E01 was post-processed as both S01E01 and S02E01),
+            # prefer the higher season number so files land in the correct folder.
+            location_to_ep: dict[str, Episode] = {}
             for ep_obj in all_episodes:
-                if ep_obj.location not in seen_locations:
-                    seen_locations.add(ep_obj.location)
-                    unique_episodes.append(ep_obj)
+                loc = ep_obj.location
+                existing = location_to_ep.get(loc)
+                if existing is None or ep_obj.season > existing.season:
+                    location_to_ep[loc] = ep_obj
+            unique_episodes = list(location_to_ep.values())
 
             moved: list[dict[str, str]] = []
             errors: list[dict[str, str]] = []
@@ -199,13 +203,14 @@ class SeriesOperationHandler(BaseRequestHandler):
                     # Create season directory if needed
                     helpers.make_dirs(season_dir)
 
-                    # Find related episodes (same location, different episode numbers)
+                    # Find related episodes (same location, different season/episode)
                     related_eps_result = main_db_con.select(
                         'SELECT season, episode '
                         'FROM tv_episodes '
-                        'WHERE location = ? AND episode != ? '
+                        'WHERE location = ? '
+                        'AND NOT (season = ? AND episode = ?) '
                         'AND indexer = ? AND showid = ?',
-                        [old_path, ep_obj.episode, series.indexer, series.series_id]
+                        [old_path, ep_obj.season, ep_obj.episode, series.indexer, series.series_id]
                     )
                     related_eps: list[Episode] = []
                     for rel in related_eps_result:
