@@ -776,6 +776,25 @@ class AnimeWithSeasonAbsoluteEpisodeNumbers(Rule):
                 to_remove = []
                 to_append = []
 
+                if season.value > 2:
+                    # Season 3+ markers (e.g. "S4") are genuine season
+                    # indicators, not part of the show name. Convert the
+                    # episode_title to episode + absolute_episode numbers.
+                    new_episode = copy.copy(episode_title)
+                    new_episode.name = 'episode'
+                    new_episode.value = int(episode_title.value)
+
+                    absolute_episode = copy.copy(new_episode)
+                    absolute_episode.name = 'absolute_episode'
+
+                    to_remove.append(episode_title)
+                    to_append.append(new_episode)
+                    to_append.append(absolute_episode)
+                    return to_remove, to_append
+
+                # Season 1 or 2: absorb season into the show title and
+                # treat the trailing number as an absolute episode.
+
                 # adjust title to append the series name.
                 # Only the season.parent contains the S prefix in its value
                 new_title = copy.copy(title)
