@@ -371,7 +371,7 @@ jobs:
       # The release always targets the tag's commit, so tag and release can never disagree.
       - name: Resolve release SHA from tag
         id: target
-        if: steps.detect.outputs.release_exists == 'false'
+        if: steps.detect.outputs.release_exists == 'false' && inputs.dry_run != true
         shell: bash
         run: |
           set -euo pipefail
