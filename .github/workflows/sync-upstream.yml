@@ -270,31 +270,19 @@ jobs:
             echo "Lockfiles already consistent."
           fi
 
-      # The released commit is the existing tag's commit when a previous run tagged but failed to
-      # publish; validation must then run on that exact tree, not on a newer branch tip.
-      - name: Resolve and check out release target
-        id: target
+      # Retry case: a previous run tagged but failed to publish. The tag is immutable, so the
+      # retry validates that exact commit and must never commit or push from it.
+      - name: Check out existing release tag for retry
+        id: retry
+        if: steps.detect.outputs.tag_needed == 'false'
         shell: bash
         run: |
           set -euo pipefail
-
           tag="${{ steps.detect.outputs.tag }}"
-          if git rev-parse -q --verify "refs/tags/${tag}" > /dev/null; then
-            target_sha="$(git rev-parse "refs/tags/${tag}^{commit}")"
-          else
-            target_sha="$(git rev-parse HEAD)"
-          fi
-
-          head_sha="$(git rev-parse HEAD)"
-          if [ "${target_sha}" != "${head_sha}" ]; then
-            echo "Tag ${tag} already points at ${target_sha}; validating that commit instead of ${head_sha}."
-            git checkout --detach "${target_sha}"
-          fi
-
-          {
-            echo "tag=${tag}"
-            echo "target_sha=${target_sha}"
-          } >> "$GITHUB_OUTPUT"
+          tag_sha="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          echo "Tag ${tag} already exists at ${tag_sha}; validating that commit."
+          git checkout --detach "${tag_sha}"
+          echo "retry=true" >> "$GITHUB_OUTPUT"
 
       - name: Install frontend dependencies
         if: steps.detect.outputs.build_needed == 'true'
@@ -319,6 +307,19 @@ jobs:
         if: steps.detect.outputs.build_needed == 'true'
         working-directory: ./themes-default/slim
         run: yarn test --silent
+
+      - name: Reject tracked changes when retrying an existing tag
+        if: steps.retry.outputs.retry == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The existing tag cannot be modified, so a retry must not leave tracked changes.
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "::error::Build/tests modified tracked files on the tagged commit; refusing to publish."
+            git status --porcelain --untracked-files=no
+            exit 1
+          fi
+          echo "Tagged commit is clean after build and tests."
 
       - name: Commit regenerated artifacts
         id: artifacts
@@ -351,7 +352,7 @@ jobs:
 
       - name: Create tag for sync release
         id: tag
-        if: steps.detect.outputs.tag_needed == 'true' && steps.detect.outputs.publish_only != 'true' && inputs.dry_run != true
+        if: steps.detect.outputs.tag_needed == 'true' && inputs.dry_run != true
         shell: bash
         run: |
           set -euo pipefail
@@ -366,6 +367,19 @@ jobs:
           git push origin "${tag}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+
+      # The release always targets the tag's commit, so tag and release can never disagree.
+      - name: Resolve release SHA from tag
+        id: target
+        if: steps.detect.outputs.release_exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.detect.outputs.tag }}"
+          target_sha="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          echo "Releasing ${tag} at ${target_sha}."
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         if: steps.detect.outputs.release_exists == 'false' && inputs.dry_run != true
