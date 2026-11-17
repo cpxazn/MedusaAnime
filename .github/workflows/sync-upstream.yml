@@ -245,11 +245,13 @@ jobs:
         if: steps.detect.outputs.build_needed == 'true'
         uses: astral-sh/setup-uv@v5
 
-      - name: Set up Node.js 18
+      # Upstream's post-sync dependency set requires Node >= 20.19 (sass 1.103.1), so the
+      # previously pinned Node 18 cannot install the frontend dependencies at all.
+      - name: Set up Node.js 22
         if: steps.detect.outputs.build_needed == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 22
 
       - name: Reconcile lockfiles against merged manifests
         if: steps.detect.outputs.merge_needed == 'true'
