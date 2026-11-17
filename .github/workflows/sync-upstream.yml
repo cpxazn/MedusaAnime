@@ -1,9 +1,19 @@
-name: Sync upstream, rebase, and release
+name: Sync upstream, merge, and release
 
 on:
   schedule:
     - cron: '0 4 * * *' # daily at 04:00 UTC
   workflow_dispatch:
+
+# Serialize sync runs; two concurrent runs would race on master and the release tag.
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: https://github.com/pymedusa/Medusa.git
+  UPSTREAM_BRANCH: master
+  SYNC_BRANCH: master # authoritative branch: the fork's features are already contained in it
 
 jobs:
   sync-and-release:
@@ -11,16 +21,11 @@ jobs:
     permissions:
       contents: write
 
-    env:
-      UPSTREAM_REPO: https://github.com/pymedusa/Medusa.git
-      UPSTREAM_BRANCH: master
-      FEATURE_BRANCH: feature/livechart-integration
-
     steps:
-      - name: Checkout feature branch
+      - name: Checkout sync branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.FEATURE_BRANCH }}
+          ref: ${{ env.SYNC_BRANCH }}
           fetch-depth: 0
           token: ${{ secrets.PAT_TOKEN }}
 
@@ -43,92 +48,237 @@ jobs:
           set -euo pipefail
 
           upstream_sha="$(git rev-parse "upstream/${UPSTREAM_BRANCH}")"
-          feature_sha="$(git rev-parse "origin/${FEATURE_BRANCH}")"
-          merge_base="$(git merge-base "origin/${FEATURE_BRANCH}" "upstream/${UPSTREAM_BRANCH}")"
+          branch_sha="$(git rev-parse "origin/${SYNC_BRANCH}")"
+          merge_base="$(git merge-base "origin/${SYNC_BRANCH}" "upstream/${UPSTREAM_BRANCH}")"
           upstream_ahead_count="$(git rev-list --count "${merge_base}..upstream/${UPSTREAM_BRANCH}")"
 
-          echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
-          echo "feature_sha=${feature_sha}" >> "$GITHUB_OUTPUT"
-          echo "merge_base=${merge_base}" >> "$GITHUB_OUTPUT"
-          echo "upstream_ahead_count=${upstream_ahead_count}" >> "$GITHUB_OUTPUT"
-
-          if [ "${upstream_ahead_count}" = "0" ]; then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "No upstream changes detected."
+          # A previous run may have merged upstream but failed before tagging/releasing, so an
+          # already-merged upstream still has to be able to finish publishing.
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" "origin/${SYNC_BRANCH}"; then
+            merge_needed=false
           else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "Upstream has ${upstream_ahead_count} new commit(s) since ${merge_base}."
+            merge_needed=true
           fi
 
-      - name: Skip when no upstream changes
-        if: steps.detect.outputs.has_changes != 'true'
-        run: echo "Nothing to sync today."
+          tag="sync-$(date -u +%Y%m%d)-$(git rev-parse --short "${upstream_sha}")"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            release_needed=false
+          else
+            release_needed=true
+          fi
 
-      - name: Rebase feature branch onto upstream master
-        if: steps.detect.outputs.has_changes == 'true'
+          echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
+          echo "branch_sha=${branch_sha}" >> "$GITHUB_OUTPUT"
+          echo "merge_base=${merge_base}" >> "$GITHUB_OUTPUT"
+          echo "upstream_ahead_count=${upstream_ahead_count}" >> "$GITHUB_OUTPUT"
+          echo "merge_needed=${merge_needed}" >> "$GITHUB_OUTPUT"
+          echo "release_needed=${release_needed}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Sync detection"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Upstream head | \`${upstream_sha}\` |"
+            echo "| Branch head | \`${branch_sha}\` |"
+            echo "| Merge base | \`${merge_base}\` |"
+            echo "| Upstream commits to merge | ${upstream_ahead_count} |"
+            echo "| Merge needed | ${merge_needed} |"
+            echo "| Release needed | ${release_needed} |"
+            echo "| Release tag | \`${tag}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge upstream into sync branch
+        if: steps.detect.outputs.merge_needed == 'true'
+        shell: bash
         run: |
-          git checkout -B "${FEATURE_BRANCH}" "origin/${FEATURE_BRANCH}"
-          git rebase "upstream/${UPSTREAM_BRANCH}"
-          git push origin "${FEATURE_BRANCH}" --force-with-lease
+          set -uo pipefail
+
+          # Generated artifacts may be taken from upstream verbatim: they are rebuilt from the
+          # merged source later in this job. Everything else that conflicts needs a human.
+          is_auto_resolvable() {
+            case "$1" in
+              themes/dark/assets/* | themes/light/assets/*) return 0 ;;
+              yarn.lock | themes-default/slim/yarn.lock | uv.lock) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          if ! git merge --no-commit --no-ff "upstream/${UPSTREAM_BRANCH}"; then
+            mapfile -t unmerged < <(git diff --name-only --diff-filter=U)
+            if [ "${#unmerged[@]}" -eq 0 ]; then
+              echo "::error::Merge failed without reported conflicts; refusing to continue."
+              exit 1
+            fi
+
+            unresolved=()
+            resolved=()
+            for path in "${unmerged[@]}"; do
+              if ! is_auto_resolvable "${path}"; then
+                unresolved+=("${path}")
+              elif git cat-file -e ":3:${path}" 2>/dev/null; then
+                git checkout --theirs -- "${path}" && git add -- "${path}"
+                resolved+=("${path}")
+                echo "auto-resolved from upstream: ${path}"
+              elif git cat-file -e ":2:${path}" 2>/dev/null; then
+                git rm -q -- "${path}"
+                echo "auto-resolved (upstream deleted it): ${path}"
+              else
+                unresolved+=("${path}")
+              fi
+            done
+
+            if [ "${#unresolved[@]}" -gt 0 ]; then
+              {
+                echo "### Sync aborted: conflicts need a human decision"
+                echo ""
+                echo "These paths conflicted and are not generated artifacts, so they were left alone:"
+                echo ""
+                for path in "${unresolved[@]}"; do echo "- \`${path}\`"; done
+                echo ""
+                echo "Nothing was pushed. Resolve these locally, then re-run this workflow."
+              } >> "$GITHUB_STEP_SUMMARY"
+              git merge --abort
+              echo "::error::Unresolved source conflicts: ${unresolved[*]}"
+              exit 1
+            fi
+          fi
+
+          # Only paths this script resolved are scanned, so pre-existing markers elsewhere (docs,
+          # minified assets) cannot produce a false failure.
+          bad=()
+          for path in "${resolved[@]+"${resolved[@]}"}"; do
+            if [ -f "${path}" ] && grep -qE '^(<<<<<<< |>>>>>>> |=======$)' "${path}"; then
+              bad+=("${path}")
+            fi
+          done
+          if [ "${#bad[@]}" -gt 0 ]; then
+            echo "::error::Conflict markers survived resolution in: ${bad[*]}"
+            git merge --abort || true
+            exit 1
+          fi
+
+          if git rev-parse -q --verify MERGE_HEAD > /dev/null; then
+            git commit -q -F - <<'COMMIT_MSG'
+          sync: merge upstream ${UPSTREAM_BRANCH} into ${SYNC_BRANCH}
+
+          Automated merge of ${UPSTREAM_REPO} ${UPSTREAM_BRANCH}.
+          Generated theme assets and lockfiles are regenerated in the following steps.
+          COMMIT_MSG
+            echo "Created merge commit $(git rev-parse --short HEAD)."
+          else
+            echo "Merge was already up to date."
+          fi
+
+      - name: Set up Python tooling
+        if: steps.detect.outputs.merge_needed == 'true'
+        uses: astral-sh/setup-uv@v5
 
       - name: Set up Node.js 18
-        if: steps.detect.outputs.has_changes == 'true'
+        if: steps.detect.outputs.merge_needed == 'true' || steps.detect.outputs.release_needed == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 18
 
-      - name: Install frontend dependencies
-        if: steps.detect.outputs.has_changes == 'true'
-        working-directory: ./themes-default/slim
+      - name: Reconcile lockfiles against merged manifests
+        if: steps.detect.outputs.merge_needed == 'true'
+        shell: bash
         run: |
-          npm install --legacy-peer-deps --ignore-scripts
-          npm install ajv@^8 --legacy-peer-deps --ignore-scripts
+          set -euo pipefail
+          uv lock
+          yarn install --ignore-scripts
+          cd themes-default/slim && yarn install --ignore-scripts
 
       - name: Build frontend assets
-        if: steps.detect.outputs.has_changes == 'true'
+        if: steps.detect.outputs.merge_needed == 'true' || steps.detect.outputs.release_needed == 'true'
         working-directory: ./themes-default/slim
-        run: npm run build
+        run: yarn build
 
-      - name: Create tag for sync release
-        if: steps.detect.outputs.has_changes == 'true'
-        id: tag
+      - name: Backend smoke tests
+        if: steps.detect.outputs.merge_needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install -r test_requirements.txt
+          uv run pytest -q -p no:flake8 tests/clients tests/helpers
+
+      - name: Frontend test report (non-blocking)
+        if: steps.detect.outputs.merge_needed == 'true'
+        continue-on-error: true
+        working-directory: ./themes-default/slim
+        run: |
+          {
+            echo "### Frontend tests (non-blocking)"
+            echo ""
+            yarn test --silent 2>&1 | tail -20
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit regenerated artifacts
+        id: artifacts
+        if: steps.detect.outputs.merge_needed == 'true' || steps.detect.outputs.release_needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          short_sha="${{ steps.detect.outputs.upstream_sha }}"
-          short_sha="${short_sha:0:7}"
-          date_tag="$(date -u +%Y%m%d)"
-          tag="sync-${date_tag}-${short_sha}-${GITHUB_RUN_NUMBER}"
-          feature_head="$(git rev-parse HEAD)"
+          # An automated run may only commit regenerated build outputs and lockfiles.
+          git add -A -- themes/dark/assets themes/light/assets
+          git add -A -- yarn.lock themes-default/slim/yarn.lock uv.lock
 
-          # Ensure the tagged commit contains the workflow files needed by downstream automation.
-          git cat-file -e "${feature_head}:.github/workflows/sync-upstream.yml"
-          git cat-file -e "${feature_head}:.github/workflows/docker-release.yml"
+          if git diff --cached --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "No regenerated artifacts to commit."
+            exit 0
+          fi
 
-          git tag "${tag}" "${feature_head}"
+          git commit -q -m "chore(sync): rebuild tracked assets and lockfiles from merged source"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "Committed regenerated artifacts: $(git rev-parse --short HEAD)"
+
+      - name: Push sync branch
+        if: steps.detect.outputs.merge_needed == 'true' || steps.artifacts.outputs.committed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fast-forward only: the sync never rewrites published history.
+          git push origin "HEAD:${SYNC_BRANCH}"
+
+      - name: Create tag for sync release
+        id: tag
+        if: steps.detect.outputs.release_needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.detect.outputs.tag }}"
+          head_sha="$(git rev-parse HEAD)"
+
+          git cat-file -e "${head_sha}:.github/workflows/sync-upstream.yml"
+          git cat-file -e "${head_sha}:.github/workflows/docker-release.yml"
+
+          git tag "${tag}" "${head_sha}"
           git push origin "${tag}"
 
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "feature_head=${feature_head}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
-        if: steps.detect.outputs.has_changes == 'true'
+        if: steps.tag.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Sync ${{ steps.tag.outputs.tag }}
-          target_commitish: ${{ steps.tag.outputs.feature_head }}
+          target_commitish: ${{ steps.tag.outputs.head_sha }}
           generate_release_notes: true
           body: |
-            Automated upstream rebase.
+            Automated upstream merge.
 
             - Upstream repo: ${{ env.UPSTREAM_REPO }}
             - Upstream branch: ${{ env.UPSTREAM_BRANCH }}
-            - Feature branch before rebase: ${{ steps.detect.outputs.feature_sha }}
-            - Merge base before rebase: ${{ steps.detect.outputs.merge_base }}
-            - New upstream master: ${{ steps.detect.outputs.upstream_sha }}
-            - Rebases applied from upstream: ${{ steps.detect.outputs.upstream_ahead_count }}
-            - Rebases result commit: ${{ steps.tag.outputs.feature_head }}
+            - Upstream head merged: ${{ steps.detect.outputs.upstream_sha }}
+            - Branch before merge: ${{ steps.detect.outputs.branch_sha }}
+            - Merge base before merge: ${{ steps.detect.outputs.merge_base }}
+            - Upstream commits merged: ${{ steps.detect.outputs.upstream_ahead_count }}
+            - Released commit: ${{ steps.tag.outputs.head_sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
