@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 4 * * *' # daily at 04:00 UTC
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run the full pipeline without pushing, tagging, or releasing'
+        type: boolean
+        default: false
 
 # Serialize sync runs; two concurrent runs would race on the branch and the release tag.
 concurrency:
@@ -253,7 +258,7 @@ jobs:
         run: yarn build
 
       - name: Backend tests
-        if: steps.detect.outputs.merge_needed == 'true'
+        if: steps.detect.outputs.build_needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -288,7 +293,7 @@ jobs:
           echo "Committed regenerated artifacts: $(git rev-parse --short HEAD)"
 
       - name: Push sync branch
-        if: steps.detect.outputs.merge_needed == 'true' || steps.artifacts.outputs.committed == 'true'
+        if: (steps.detect.outputs.merge_needed == 'true' || steps.artifacts.outputs.committed == 'true') && inputs.dry_run != true
         shell: bash
         run: |
           set -euo pipefail
@@ -297,7 +302,7 @@ jobs:
 
       - name: Create tag for sync release
         id: tag
-        if: steps.detect.outputs.tag_needed == 'true'
+        if: steps.detect.outputs.tag_needed == 'true' && inputs.dry_run != true
         shell: bash
         run: |
           set -euo pipefail
@@ -315,7 +320,7 @@ jobs:
 
       - name: Resolve release target
         id: target
-        if: steps.detect.outputs.release_exists == 'false'
+        if: steps.detect.outputs.release_exists == 'false' && inputs.dry_run != true
         shell: bash
         run: |
           set -euo pipefail
@@ -332,7 +337,7 @@ jobs:
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
-        if: steps.detect.outputs.release_exists == 'false'
+        if: steps.detect.outputs.release_exists == 'false' && inputs.dry_run != true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.target.outputs.tag }}
