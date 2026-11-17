@@ -244,6 +244,7 @@ def test_set_torrent_state_old_api_does_not_call_start_stop_endpoints(requests_m
     ('metaDL', 'Downloading'),
     ('stoppedDL', 'Paused'),
     ('pausedDL', 'Paused'),
+    ('stalledDL', 'Paused'),
     ('stalledUP', 'Completed'),
     ('stoppedUP', 'Completed'),
     ('error', 'Failed'),

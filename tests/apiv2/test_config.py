@@ -72,6 +72,7 @@ def config_main(monkeypatch, app_config):
     section_data['logs'] = {}
     section_data['logs']['debug'] = bool(app.DEBUG)
     section_data['logs']['dbDebug'] = bool(app.DBDEBUG)
+    section_data['logs']['apiTiming'] = bool(app.WEB_API_TIMING)
     section_data['logs']['loggingLevels'] = {k.lower(): v for k, v in iteritems(logger.LOGGING_LEVELS)}
     section_data['logs']['numErrors'] = len(classes.ErrorViewer.errors)
     section_data['logs']['numWarnings'] = len(classes.WarningViewer.errors)
