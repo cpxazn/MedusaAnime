@@ -316,6 +316,7 @@ export default {
 
             // Collect all the needed form data.
             const {
+                general,
                 indexerIdToName,
                 indexerLanguage,
                 presetShowOptions,
@@ -329,7 +330,7 @@ export default {
             const options = {};
 
             if (providedInfo.use) {
-                options.language = providedInfo.indexerLanguage;
+                options.language = providedInfo.indexerLanguage || general.indexerDefaultLanguage;
                 showId[indexerIdToName(providedInfo.indexerId)] = providedInfo.showId;
             } else {
                 options.language = indexerLanguage;
