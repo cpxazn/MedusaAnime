@@ -9,6 +9,10 @@ on:
         description: 'Run the full pipeline without pushing, tagging, or releasing'
         type: boolean
         default: false
+      sync_branch:
+        description: 'Branch to sync (default: master). Use a throwaway branch for validation runs.'
+        type: string
+        default: master
 
 # Serialize sync runs; two concurrent runs would race on the branch and the release tag.
 concurrency:
@@ -18,11 +22,14 @@ concurrency:
 env:
   UPSTREAM_REPO: https://github.com/pymedusa/Medusa.git
   UPSTREAM_BRANCH: master
-  SYNC_BRANCH: master # authoritative branch: the fork's features are already contained in it
+
 
 jobs:
   sync-and-release:
     runs-on: ubuntu-latest
+    env:
+      # Authoritative branch by default; a validation run may point at a throwaway branch.
+      SYNC_BRANCH: ${{ inputs.sync_branch || 'master' }}
     permissions:
       contents: write
 
