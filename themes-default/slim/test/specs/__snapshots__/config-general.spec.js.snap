@@ -691,6 +691,16 @@ exports[`ConfigGeneral.test.js renders 1`] = `
                  
                 <config-toggle-slider-stub
                   explanations=""
+                  id="show_active_only"
+                  label="Show only active shows"
+                >
+                  <p>
+                    hide shows that are paused or ended on the home page
+                  </p>
+                </config-toggle-slider-stub>
+                 
+                <config-toggle-slider-stub
+                  explanations=""
                   id="split_home_in_tabs"
                   label="Split home in tabs"
                   value="true"
@@ -1417,6 +1427,16 @@ exports[`ConfigGeneral.test.js renders 1`] = `
                 >
                   <p>
                     Enable DB debug logs
+                  </p>
+                </config-toggle-slider-stub>
+                 
+                <config-toggle-slider-stub
+                  explanations=""
+                  id="api_timing"
+                  label="Log API timings"
+                >
+                  <p>
+                    Log timing for API requests to help identify slow endpoints
                   </p>
                 </config-toggle-slider-stub>
                  
