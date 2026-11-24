@@ -409,14 +409,15 @@ async def test_add_invalid_source(http_client, create_url):
 
 @pytest.mark.gen_test
 async def test_add_anime_already_in_library(http_client, create_url):
-    anime = _make_anime(anime_id=1, title_english='Naruto', anidb_id=12345)
+    anime = _make_anime(anime_id=1, title_english='Naruto', anidb_id=12345, tvdb_id=666)
     mock_show = MagicMock()
     mock_show.title = 'Naruto'
+    mock_show.identifier.slug = 'tvdb666'
     mock_client = MagicMock()
     mock_client.get_details.return_value = anime
 
     with patch.object(AnimeHandler, '_get_client', return_value=mock_client):
-        with patch('medusa.server.api.v2.anime.match_anime_to_show', return_value=mock_show):
+        with patch('medusa.server.api.v2.anime.find_owned_tvdb_series', return_value=mock_show):
             url = create_url('/anime/add')
             body = json.dumps({'anime_id': 1, 'source': 'livechart', 'root_dir': '/anime'})
             response = await http_client.fetch(
@@ -438,7 +439,7 @@ async def test_add_anime_no_indexer_id(http_client, create_url):
     mock_client.get_details.return_value = anime
 
     with patch.object(AnimeHandler, '_get_client', return_value=mock_client):
-        with patch('medusa.server.api.v2.anime.match_anime_to_show', return_value=None):
+        with patch.object(AnimeHandler, '_search_tvdb_candidates', return_value=[]):
             url = create_url('/anime/add')
             body = json.dumps({'anime_id': 1, 'source': 'livechart', 'root_dir': '/anime'})
             response = await http_client.fetch(
@@ -468,9 +469,9 @@ async def test_add_anime_defaults_single_release_group_fallback(http_client, cre
     scheduler.action.addShow.return_value = queue_item
 
     with patch.object(AnimeHandler, '_get_client', return_value=mock_client):
-        with patch('medusa.server.api.v2.anime.match_anime_to_show', return_value=None):
-            with patch('medusa.server.api.v2.anime.cached_aid_to_tvdb', return_value=None):
-                with patch('medusa.indexers.utils.slug_to_indexer_id', return_value=666):
+        with patch('medusa.server.api.v2.anime.find_owned_tvdb_series', return_value=None):
+            with patch('medusa.server.api.v2.anime.mapped_tvdb_id', return_value=None):
+                with patch.object(AnimeHandler, '_search_tvdb_candidates', return_value=[{'tvdbId': 666}]):
                     with patch.object(app, 'show_queue_scheduler', scheduler):
                         url = create_url('/anime/add')
                         body = json.dumps({'anime_id': 1, 'source': 'livechart', 'root_dir': '/anime'})
@@ -502,9 +503,9 @@ async def test_add_anime_respects_initial_and_fallback_release_groups(http_clien
     scheduler.action.addShow.return_value = queue_item
 
     with patch.object(AnimeHandler, '_get_client', return_value=mock_client):
-        with patch('medusa.server.api.v2.anime.match_anime_to_show', return_value=None):
-            with patch('medusa.server.api.v2.anime.cached_aid_to_tvdb', return_value=None):
-                with patch('medusa.indexers.utils.slug_to_indexer_id', return_value=666):
+        with patch('medusa.server.api.v2.anime.find_owned_tvdb_series', return_value=None):
+            with patch('medusa.server.api.v2.anime.mapped_tvdb_id', return_value=None):
+                with patch.object(AnimeHandler, '_search_tvdb_candidates', return_value=[{'tvdbId': 666}]):
                     with patch.object(app, 'show_queue_scheduler', scheduler):
                         url = create_url('/anime/add')
                         body = json.dumps({
@@ -547,11 +548,11 @@ async def test_bulk_add_dry_run_returns_per_item_results(http_client, create_url
     mock_client.get_details.side_effect = lambda anime_id: animes[anime_id]
     scheduler = MagicMock()
 
-    def match(anime):
-        return mock_show if anime.anime_id == 2 else None
+    def match(tvdb_id):
+        return mock_show if tvdb_id == 444 else None
 
     with patch.object(AnimeHandler, '_get_client', return_value=mock_client):
-        with patch('medusa.server.api.v2.anime.match_anime_to_show', side_effect=match):
+        with patch('medusa.server.api.v2.anime.find_owned_tvdb_series', side_effect=match):
             with patch.object(app, 'show_queue_scheduler', scheduler):
                 url = create_url('/anime/bulk-add')
                 body = json.dumps({
@@ -576,16 +577,21 @@ async def test_bulk_add_dry_run_returns_per_item_results(http_client, create_url
     assert response.code == 200
     data = json.loads(response.body)
     assert data['dryRun'] is True
+    assert data['identityVersion'] == 1
     assert data['requested'] == 2
     assert data['successes'] == 1
     assert data['failures'] == 1
     assert data['results'][0]['animeId'] == 1
     assert data['results'][0]['success'] is True
     assert data['results'][0]['action'] == 'would_add'
+    assert data['results'][0]['outcome'] == 'ready_to_add'
+    assert data['results'][0]['tvdbId'] == 222
     assert data['results'][0]['matched'] is False
     assert data['results'][1]['animeId'] == 2
     assert data['results'][1]['success'] is False
     assert data['results'][1]['action'] == 'already_exists'
+    assert data['results'][1]['outcome'] == 'already_exists'
+    assert data['results'][1]['match'] == {'title': 'Existing Show', 'slug': 'tvdb444'}
     assert data['results'][1]['matched'] is True
     scheduler.action.addShow.assert_not_called()
 
@@ -604,7 +610,7 @@ async def test_bulk_add_item_overrides_defaults_and_continues_after_failure(http
     scheduler.action.addShow.return_value = queue_item
 
     with patch.object(AnimeHandler, '_get_client', return_value=mock_client):
-        with patch('medusa.server.api.v2.anime.match_anime_to_show', return_value=None):
+        with patch('medusa.server.api.v2.anime.find_owned_tvdb_series', return_value=None):
             with patch.object(app, 'show_queue_scheduler', scheduler):
                 url = create_url('/anime/bulk-add')
                 body = json.dumps({
@@ -635,6 +641,7 @@ async def test_bulk_add_item_overrides_defaults_and_continues_after_failure(http
     assert data['failures'] == 1
     assert data['results'][0]['success'] is True
     assert data['results'][0]['action'] == 'added'
+    assert data['results'][0]['outcome'] == 'queued'
     assert data['results'][1]['success'] is False
     assert data['results'][1]['action'] == 'not_found'
     scheduler.action.addShow.assert_called_once()

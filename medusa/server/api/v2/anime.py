@@ -11,12 +11,20 @@ from medusa.common import statusStrings
 from medusa.clients.anime import AnimeSeries
 from medusa.clients.livechart import LiveChartClient
 from medusa.clients.myanimelist import MyAnimeListClient
-from medusa.helpers.anime_matcher import match_anime_to_show, find_similar_anime
+from medusa.helpers.anime_matcher import (
+    AnimeMatcher,
+    anime_titles,
+    find_owned_tvdb_series,
+    find_similar_anime,
+    mapped_tvdb_id,
+    match_anime_to_show,
+    title_tokens,
+)
 from medusa.indexers.api import indexerApi
 from medusa.indexers.config import INDEXER_TVDBV2
 from medusa.logger.adapters.style import BraceAdapter
+from medusa.queues.show_queue import QueueItemAdd
 from medusa.server.api.v2.base import BaseRequestHandler
-from medusa.show.recommendations.recommended import cached_aid_to_tvdb
 from medusa.tv.series import Series
 
 from tornado.escape import json_decode
@@ -262,15 +270,11 @@ class AnimeHandler(BaseRequestHandler):
             return self._bulk_add(data)
 
         result = self._add_anime_item(data)
+        if result['outcome'] == 'already_queued':
+            return self._accepted(data=self._clean_bulk_result(result))
         if result['success']:
             return self._created(data=result.get('queueItem'))
-        if result['status'] == 404:
-            return self._not_found(result['error'])
-        if result['status'] == 409:
-            return self._conflict(result['error'])
-        if result['status'] >= 500:
-            return self._internal_server_error(result['error'])
-        return self._bad_request(result['error'])
+        return self.api_response(result['status'], data=self._clean_bulk_result(result))
 
     def _bulk_add(self, data):
         """Add or validate multiple anime items, returning per-item results."""
@@ -278,7 +282,10 @@ class AnimeHandler(BaseRequestHandler):
         items = data.get('items') or []
         dry_run = self._parse_boolean(data.get('dry_run', False))
         verify = self._parse_boolean(data.get('verify', False))
+        version = data.get('identity_version', 1)
 
+        if type(version) is not int or version != 1:
+            return self._bad_request('Unsupported anime identity contract version')
         if not isinstance(defaults, dict):
             return self._bad_request('defaults must be an object')
         if not isinstance(items, list) or not items:
@@ -291,6 +298,7 @@ class AnimeHandler(BaseRequestHandler):
                     'animeId': None,
                     'success': False,
                     'action': 'invalid',
+                    'outcome': 'invalid',
                     'matched': False,
                     'error': 'Bulk add item must be an object.',
                 })
@@ -306,12 +314,14 @@ class AnimeHandler(BaseRequestHandler):
                     'animeId': item_data.get('anime_id'),
                     'success': False,
                     'action': 'error',
+                    'outcome': 'error',
                     'matched': False,
                     'error': str(error),
                 })
 
         successes = len([result for result in results if result.get('success')])
         response = {
+            'identityVersion': 1,
             'dryRun': dry_run,
             'requested': len(items),
             'successes': successes,
@@ -327,6 +337,7 @@ class AnimeHandler(BaseRequestHandler):
             'animeId': anime_id,
             'success': False,
             'action': 'invalid',
+            'outcome': 'invalid',
             'matched': False,
             'status': 400,
         }
@@ -363,31 +374,43 @@ class AnimeHandler(BaseRequestHandler):
         result['animeId'] = anime_obj.anime_id
         result['displayTitle'] = anime_obj.display_title
 
-        existing_show = match_anime_to_show(anime_obj)
-        if existing_show:
-            result.update({
-                'action': 'already_exists',
-                'matched': True,
-                'match': {
-                    'slug': existing_show.identifier.slug,
-                    'title': existing_show.title,
-                } if getattr(existing_show, 'identifier', None) else {'title': existing_show.title},
-                'status': 409,
-                'error': 'Anime already exists in library: {0}'.format(existing_show.title),
-            })
-            return result
-
-        dir_name = data.get('directory_name', None) or anime_obj.directory_name
-        show_dir = dir_name
-        if dir_name and root_dir and not os.path.isabs(dir_name):
-            show_dir = os.path.join(root_dir, dir_name)
-
-        if not anime_obj.anidb_id:
-            return self._item_error(result, 'Could not resolve indexer ID for this anime')
-
-        tvdb_id = self._resolve_tvdb_id(anime_obj)
+        tvdb_id = mapped_tvdb_id(anime_obj)
         if not tvdb_id:
-            return self._item_error(result, 'Could not map AniDB ID {0} to a TVDB ID'.format(anime_obj.anidb_id))
+            tvdb_candidates = self._search_tvdb_candidates(anime_obj)
+            if len(tvdb_candidates) > 1:
+                result['candidates'] = tvdb_candidates
+                return self._item_error(result, 'Multiple TVDB series match this anime.', action='needs_review', status=422)
+            if tvdb_candidates:
+                tvdb_id = tvdb_candidates[0]['tvdbId']
+
+        if tvdb_id:
+            tvdb_id = int(tvdb_id)
+            result['tvdbId'] = tvdb_id
+            existing_show = find_owned_tvdb_series(tvdb_id)
+        else:
+            exact = AnimeMatcher.exact_title_matches(anime_obj)
+            existing_show = exact[0] if len(exact) == 1 else None
+            if len(exact) > 1:
+                result['candidates'] = [self._library_candidate(show) for show in exact]
+                return self._item_error(result, 'Multiple library series match this title.', action='needs_review', status=422)
+
+        if existing_show:
+            result.update({'matched': True, 'match': self._library_candidate(existing_show)})
+            return self._item_error(result, f'Anime already exists in library: {existing_show.title}',
+                                    action='already_exists', status=409)
+
+        if not tvdb_id:
+            similar = find_similar_anime(anime_obj, limit=5)
+            if similar:
+                result['candidates'] = [dict(self._library_candidate(show), score=score) for show, score in similar]
+                return self._item_error(result, 'Possible library matches; no TVDB identity confirmed.',
+                                        action='needs_review', status=422)
+            return self._item_error(result, 'Could not resolve a TVDB indexer ID for this anime.',
+                                    action='mapping_failed')
+
+        show_dir = data.get('directory_name') or anime_obj.directory_name
+        if show_dir and root_dir and not os.path.isabs(show_dir):
+            show_dir = os.path.join(root_dir, show_dir)
 
         default_status = self._parse_episode_status(data.get('status', 'wanted'))
         if default_status is None:
@@ -425,9 +448,16 @@ class AnimeHandler(BaseRequestHandler):
         options['anime_release_group_fallback_days'] = release_group_fallback_days
         options['anime_release_group_last_switch'] = None
 
+        queue = app.show_queue_scheduler.action if app.show_queue_scheduler else None
+        if queue and self._is_tvdb_add_pending(queue, tvdb_id):
+            result.update({'success': True, 'action': 'already_queued', 'outcome': 'already_queued', 'status': 202,
+                           'message': 'An add for this TVDB series is already pending.'})
+            return result
+
         result.update({
             'success': True,
             'action': 'would_add' if dry_run else 'added',
+            'outcome': 'ready_to_add' if dry_run else 'queued',
             'status': 200 if dry_run else 201,
             'matched': False,
             'message': 'Dry-run validation passed.' if dry_run else 'Anime queued for add.',
@@ -437,17 +467,26 @@ class AnimeHandler(BaseRequestHandler):
             return result
 
         try:
-            queue_item_obj = app.show_queue_scheduler.action.addShow(
-                INDEXER_TVDBV2, tvdb_id, show_dir, **options
-            )
+            queue_item_obj = queue.addShow(INDEXER_TVDBV2, tvdb_id, show_dir, **options)
         except Exception as error:
             log.warning('Failed to add anime to queue: {error}', error=error)
             return self._item_error(result, str(error), action='error', status=500)
 
         result['queueItem'] = queue_item_obj.to_json
         if verify:
-            result['matched'] = match_anime_to_show(anime_obj) is not None
+            owned = find_owned_tvdb_series(tvdb_id)
+            if owned:
+                result.update({'matched': True, 'match': self._library_candidate(owned)})
         return result
+
+    @staticmethod
+    def _library_candidate(show):
+        return {'slug': show.identifier.slug, 'title': show.title}
+
+    @staticmethod
+    def _is_tvdb_add_pending(queue, tvdb_id):
+        return any(isinstance(item, QueueItemAdd) and item.indexer == INDEXER_TVDBV2
+                   and item.indexer_id == tvdb_id for item in (*queue.queue, queue.current_item))
 
     @staticmethod
     def _parse_optional_int(value):
@@ -465,6 +504,7 @@ class AnimeHandler(BaseRequestHandler):
         result.update({
             'success': False,
             'action': action,
+            'outcome': action,
             'status': status,
             'error': error,
         })
@@ -499,91 +539,40 @@ class AnimeHandler(BaseRequestHandler):
 
         return None
 
-    @staticmethod
-    def _normalize_title(title):
-        """Normalize a title for cross-source comparisons."""
-        if not title:
-            return ''
-        return re.sub(r'[^a-z0-9]+', '', title.lower())
-
-    def _tvdb_search_titles(self, anime: AnimeSeries):
-        """Generate candidate titles to search on TVDB."""
-        titles = [
-            anime.title_english,
-            anime.title_romanji,
-            anime.title_japanese,
-            anime.display_title,
-        ]
-        titles.extend(anime.title_synonyms or [])
-
-        seen = set()
-        for title in titles:
-            normalized = self._normalize_title(title)
-            if title and normalized and normalized not in seen:
-                seen.add(normalized)
-                yield title
-
-    def _tvdb_result_matches(self, anime: AnimeSeries, result: dict) -> bool:
-        """Return True when a TVDB search result is a safe match for this anime."""
-        anime_titles = {self._normalize_title(title) for title in self._tvdb_search_titles(anime)}
-        result_titles = [result.get('seriesname')]
-        result_titles.extend((result.get('aliases') or '').split('|'))
-
-        if not any(self._normalize_title(title) in anime_titles for title in result_titles):
-            return False
-
-        first_aired = result.get('firstaired') or ''
-        if anime.year and first_aired[:4].isdigit() and int(first_aired[:4]) != anime.year:
-            return False
-
-        return True
-
-    def _search_tvdb_id(self, anime: AnimeSeries):
-        """Fallback to TVDB search when AniDB's mapping list does not know this anime yet."""
+    def _search_tvdb_candidates(self, anime: AnimeSeries):
+        """Return distinct TVDB IDs with an exact title or alias and compatible year."""
+        titles = {title_tokens(title): title for title in anime_titles(anime) if title_tokens(title)}
+        if not titles:
+            return []
         try:
             tvdb_api = indexerApi(INDEXER_TVDBV2)
             tvdb = tvdb_api.indexer(**tvdb_api.api_params)
         except Exception as error:
             log.warning('Unable to initialize TVDB search for {title}: {error}', title=anime.display_title, error=error)
-            return None
+            return []
 
-        for title in self._tvdb_search_titles(anime):
+        candidates = {}
+        for title in titles.values():
             try:
                 results = tvdb.search(title) or []
             except Exception as error:
                 log.debug('TVDB search failed for {title}: {error}', title=title, error=error)
                 continue
-
             for result in results:
-                if self._tvdb_result_matches(anime, result):
-                    return result.get('id')
-
-        return None
-
-    def _resolve_tvdb_id(self, anime: AnimeSeries):
-        """Resolve a TVDB ID for an anime using AniDB mapping, then TVDB title search."""
-        if anime.tvdb_id:
-            return anime.tvdb_id
-
-        if anime.anidb_id:
-            try:
-                tvdb_id = cached_aid_to_tvdb(anime.anidb_id)
-                if tvdb_id:
-                    return tvdb_id
-            except Exception as error:
-                log.warning(
-                    'Failed to map AniDB ID {anidb_id} to TVDB ID: {error}',
-                    anidb_id=anime.anidb_id,
-                    error=error
-                )
-
-        tvdb_id = self._search_tvdb_id(anime)
-        if tvdb_id:
-            log.info('Resolved TVDB ID {tvdb_id} for {title} using TVDB search fallback', {
-                'tvdb_id': tvdb_id,
-                'title': anime.display_title,
-            })
-        return tvdb_id
+                name = result.get('seriesname')
+                names = [name, *(result.get('aliases') or '').split('|')]
+                if not any(title_tokens(name) in titles for name in names):
+                    continue
+                year = (result.get('firstaired') or '')[:4]
+                if anime.year and year.isdigit() and int(year) != anime.year:
+                    continue
+                try:
+                    tvdb_id = int(result.get('id'))
+                except (TypeError, ValueError):
+                    continue
+                if tvdb_id > 0:
+                    candidates[tvdb_id] = {'tvdbId': tvdb_id, 'title': name, 'year': year or None}
+        return list(candidates.values())
 
     def _get_client(self, source: str):
         """Get the appropriate anime client.
